@@ -8,7 +8,7 @@ from requests import Response
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "oldp-ingestor/0.1.1 (+https://github.com/openlegaldata)"
+USER_AGENT = "oldp-ingestor/0.1.2 (+https://github.com/openlegaldata)"
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 1  # seconds
 

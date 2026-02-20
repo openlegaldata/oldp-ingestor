@@ -39,7 +39,7 @@ class PlaywrightBaseClient:
             self._playwright = sync_playwright().start()
             self._browser = self._playwright.chromium.launch(headless=self.headless)
             self._context = self._browser.new_context(
-                user_agent="oldp-ingestor/0.1.1 (+https://github.com/openlegaldata)"
+                user_agent="oldp-ingestor/0.1.2 (+https://github.com/openlegaldata)"
             )
 
     def _get_page_html(
