@@ -327,7 +327,7 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
 # --- Per-state subclasses (thin — just BASE_URL override) ---
 
 
-class BbCaseProvider(JurisCaseProvider):
+class BbBeCaseProvider(JurisCaseProvider):
     """Berlin-Brandenburg (gesetze.berlin.de)."""
 
     BASE_URL = "https://gesetze.berlin.de/bsbe"

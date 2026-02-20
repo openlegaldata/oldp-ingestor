@@ -364,9 +364,9 @@ class TestJurisCaseProviderReal:
 
     def test_bb_get_cases(self):
         """Fetch at least 1 case from Berlin-Brandenburg portal."""
-        from oldp_ingestor.providers.de.juris import BbCaseProvider
+        from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
-        provider = BbCaseProvider(limit=1, request_delay=1.0)
+        provider = BbBeCaseProvider(limit=1, request_delay=1.0)
         cases = provider.get_cases()
 
         assert len(cases) >= 1
@@ -487,9 +487,9 @@ class TestJurisCaseProviderReal:
 
     def test_bb_get_case_ids_from_page(self):
         """Fetch case IDs from a real Berlin-Brandenburg search page."""
-        from oldp_ingestor.providers.de.juris import BbCaseProvider
+        from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
-        provider = BbCaseProvider(request_delay=1.0)
+        provider = BbBeCaseProvider(request_delay=1.0)
         try:
             url = provider._search_url(1)
             ids = provider._get_case_ids_from_page(url)
@@ -503,9 +503,9 @@ class TestJurisCaseProviderReal:
         """Dates from Juris portals should be in YYYY-MM-DD format."""
         import re
 
-        from oldp_ingestor.providers.de.juris import BbCaseProvider
+        from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
-        provider = BbCaseProvider(limit=1, request_delay=1.0)
+        provider = BbBeCaseProvider(limit=1, request_delay=1.0)
         cases = provider.get_cases()
 
         assert len(cases) >= 1

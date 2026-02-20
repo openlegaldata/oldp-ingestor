@@ -1893,9 +1893,9 @@ def test_juris_parse_german_date():
 
 
 def test_juris_search_url():
-    from oldp_ingestor.providers.de.juris import BbCaseProvider
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
-    provider = BbCaseProvider.__new__(BbCaseProvider)
+    provider = BbBeCaseProvider.__new__(BbBeCaseProvider)
     provider.BASE_URL = "https://gesetze.berlin.de/bsbe"
 
     url1 = provider._search_url(1)
@@ -2159,7 +2159,7 @@ def test_juris_sanitize_realistic_case():
 def test_juris_all_subclasses_have_base_url():
     """All Juris subclasses must have non-empty BASE_URL."""
     from oldp_ingestor.providers.de.juris import (
-        BbCaseProvider,
+        BbBeCaseProvider,
         BwCaseProvider,
         HeCaseProvider,
         HhCaseProvider,
@@ -2172,7 +2172,7 @@ def test_juris_all_subclasses_have_base_url():
     )
 
     for cls in [
-        BbCaseProvider,
+        BbBeCaseProvider,
         HhCaseProvider,
         MvCaseProvider,
         RlpCaseProvider,
@@ -2658,7 +2658,7 @@ def test_rii_get_cases_handles_fetch_errors(monkeypatch):
 
 def test_juris_get_cases_with_mock(monkeypatch):
     """Full juris integration test with mocked Playwright."""
-    from oldp_ingestor.providers.de.juris import BbCaseProvider
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
     search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
 
@@ -2695,10 +2695,10 @@ def test_juris_get_cases_with_mock(monkeypatch):
             return "<html><body>empty</body></html>"
         return detail_html
 
-    monkeypatch.setattr(BbCaseProvider, "_get_page_html", mock_get_page_html)
-    monkeypatch.setattr(BbCaseProvider, "close", lambda self: None)
+    monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
+    monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
 
-    provider = BbCaseProvider(limit=1, request_delay=0)
+    provider = BbBeCaseProvider(limit=1, request_delay=0)
     cases = provider.get_cases()
 
     assert len(cases) == 1
@@ -3348,7 +3348,7 @@ def test_all_case_providers_have_source():
     from oldp_ingestor.providers.de.by import ByCaseProvider
     from oldp_ingestor.providers.dummy.dummy_cases import DummyCaseProvider
     from oldp_ingestor.providers.de.juris import (
-        BbCaseProvider,
+        BbBeCaseProvider,
         BwCaseProvider,
         HeCaseProvider,
         HhCaseProvider,
@@ -3370,7 +3370,7 @@ def test_all_case_providers_have_source():
         ByCaseProvider,
         NrwCaseProvider,
         NsCaseProvider,
-        BbCaseProvider,
+        BbBeCaseProvider,
         HhCaseProvider,
         MvCaseProvider,
         RlpCaseProvider,
@@ -3392,7 +3392,7 @@ def test_case_providers_homepage_urls():
     """Non-dummy providers must have a valid https:// homepage URL."""
     from oldp_ingestor.providers.de.by import ByCaseProvider
     from oldp_ingestor.providers.de.juris import (
-        BbCaseProvider,
+        BbBeCaseProvider,
         BwCaseProvider,
         HeCaseProvider,
         HhCaseProvider,
@@ -3413,7 +3413,7 @@ def test_case_providers_homepage_urls():
         ByCaseProvider,
         NrwCaseProvider,
         NsCaseProvider,
-        BbCaseProvider,
+        BbBeCaseProvider,
         HhCaseProvider,
         MvCaseProvider,
         RlpCaseProvider,
