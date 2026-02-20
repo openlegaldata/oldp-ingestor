@@ -322,7 +322,7 @@ def cmd_cases(args):
 
 
 _JURIS_PROVIDERS = {
-    "juris-bb": "BbCaseProvider",
+    "juris-bb": "BbBeCaseProvider",
     "juris-hh": "HhCaseProvider",
     "juris-mv": "MvCaseProvider",
     "juris-rlp": "RlpCaseProvider",

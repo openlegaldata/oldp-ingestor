@@ -24,7 +24,7 @@ Provider                          # common base (providers/base.py)
     ├── NsCaseProvider             # Lower Saxony via NI-VORIS (providers/de/)
     ├── EuCaseProvider             # EU courts via EUR-Lex (providers/de/)
     └── JurisCaseProvider          # juris-hosted state portals (10 variants, providers/de/):
-        ├── BbCaseProvider         #   Berlin-Brandenburg
+        ├── BbBeCaseProvider       #   Berlin-Brandenburg
         ├── BwCaseProvider         #   Baden-Württemberg
         ├── HeCaseProvider         #   Hessen
         ├── HhCaseProvider         #   Hamburg

@@ -792,7 +792,7 @@ def test_make_case_provider_nrw(monkeypatch):
 def test_make_case_provider_juris_bb(monkeypatch):
     monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")
     from oldp_ingestor.cli import _make_case_provider
-    from oldp_ingestor.providers.de.juris import BbCaseProvider
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
     class FakeArgs:
         provider = "juris-bb"
@@ -803,7 +803,7 @@ def test_make_case_provider_juris_bb(monkeypatch):
         request_delay = 0.5
 
     provider = _make_case_provider(FakeArgs())
-    assert isinstance(provider, BbCaseProvider)
+    assert isinstance(provider, BbBeCaseProvider)
 
 
 def test_make_case_provider_juris_he(monkeypatch):
