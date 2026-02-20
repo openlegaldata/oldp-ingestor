@@ -1,0 +1,70 @@
+[project]
+name = "oldp-ingestor"
+version = "0.1.1"
+description = "Ingesting legal data like laws and court decisions via OLDP API"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Open Legal Data", email = "hello@openlegaldata.io" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "python-dotenv",
+    "requests",
+    "lxml",
+    "cssselect",
+    "playwright",
+    "pymupdf",
+]
+
+[project.urls]
+Homepage = "https://github.com/openlegaldata/oldp-ingestor"
+Repository = "https://github.com/openlegaldata/oldp-ingestor"
+Issues = "https://github.com/openlegaldata/oldp-ingestor/issues"
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-cov",
+]
+
+[project.scripts]
+oldp-ingestor = "oldp_ingestor.cli:main"
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "real: marks tests that make real network requests (deselected by default, use --run-real to include)",
+    "playwright: marks tests that require Playwright browsers (deselected by default, use --run-playwright to include)",
+]
+
+[tool.coverage.run]
+source = ["src/oldp_ingestor"]
+omit = ["tests/test_real.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

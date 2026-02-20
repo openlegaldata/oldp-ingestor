@@ -1,0 +1,14 @@
+name: Playwright
+
+on:
+  workflow_dispatch:
+
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python python3.12
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest --run-playwright -m playwright -v

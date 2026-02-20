@@ -1,0 +1,13 @@
+<html>
+<head><title>Playwright Test Page</title></head>
+<body>
+<div id="content">Hello from Playwright</div>
+<div class="dynamic" style="display:none;">Dynamic content</div>
+<script>
+  // Simulate dynamic content appearing after a short delay
+  setTimeout(function() {
+    document.querySelector('.dynamic').style.display = 'block';
+  }, 100);
+</script>
+</body>
+</html>

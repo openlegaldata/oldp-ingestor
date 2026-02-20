@@ -1,0 +1,113 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  bump-version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Bump version
+        id: bump
+        run: |
+          current=$(grep -m1 '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          IFS='.' read -r major minor patch <<< "$current"
+
+          case "${{ inputs.bump }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+
+          new="${major}.${minor}.${patch}"
+          echo "new_version=${new}" >> "$GITHUB_OUTPUT"
+          echo "Bumping $current -> $new"
+
+          sed -i "3s/.*/version = \"${new}\"/" pyproject.toml
+          sed -i "s|oldp-ingestor/[0-9]*\.[0-9]*\.[0-9]*|oldp-ingestor/${new}|" \
+            src/oldp_ingestor/providers/http_client.py \
+            src/oldp_ingestor/providers/playwright_client.py
+
+      - name: Update lockfile
+        run: uv lock
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml uv.lock \
+            src/oldp_ingestor/providers/http_client.py \
+            src/oldp_ingestor/providers/playwright_client.py
+          git commit -m "Release v${{ steps.bump.outputs.new_version }}"
+          git tag "v${{ steps.bump.outputs.new_version }}"
+          git push origin main --tags
+
+  publish-pypi:
+    needs: bump-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.bump-version.outputs.new_version }}
+
+      - uses: astral-sh/setup-uv@v6
+
+      - run: uv build
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-docker:
+    needs: bump-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.bump-version.outputs.new_version }}
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute Docker tags
+        id: tags
+        run: |
+          version="${{ needs.bump-version.outputs.new_version }}"
+          major_minor="${version%.*}"
+          echo "tags=ghcr.io/openlegaldata/oldp-ingestor:latest,ghcr.io/openlegaldata/oldp-ingestor:${version},ghcr.io/openlegaldata/oldp-ingestor:${major_minor}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}

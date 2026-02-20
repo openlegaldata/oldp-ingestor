@@ -1,0 +1,14 @@
+.git
+.github
+__pycache__
+.venv
+tests/
+docs/
+.env
+legacy_case_scraper/
+results/
+dist/
+*.egg-info
+.ruff_cache
+.pytest_cache
+.coverage
