@@ -20,6 +20,24 @@ class CaseProvider(Provider):
     """Base class for case data providers."""
 
     SOURCE: dict = {"name": "", "homepage": ""}
+    date_from: str = ""
+    date_to: str = ""
+
+    def _is_within_date_range(self, date_str: str) -> bool:
+        """Check if *date_str* (YYYY-MM-DD) falls within the configured range.
+
+        Returns ``True`` when no filters are set, or when *date_str* is
+        missing/unparseable (to avoid silently dropping cases).
+        """
+        if not self.date_from and not self.date_to:
+            return True
+        if not date_str or len(date_str) < 10:
+            return True
+        if self.date_from and date_str < self.date_from:
+            return False
+        if self.date_to and date_str > self.date_to:
+            return False
+        return True
 
     def get_cases(self) -> list[dict]:
         """Return list of case dicts for the cases API.

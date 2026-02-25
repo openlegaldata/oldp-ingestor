@@ -28,8 +28,8 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
     SSR application (no JavaScript rendering needed).
 
     Args:
-        date_from: Optional start date filter (YYYY-MM-DD, not used in search URL yet).
-        date_to: Optional end date filter (YYYY-MM-DD, not used in search URL yet).
+        date_from: Optional start date filter (YYYY-MM-DD, applied client-side).
+        date_to: Optional end date filter (YYYY-MM-DD, applied client-side).
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -180,6 +180,8 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
                     continue
 
                 if case is not None:
+                    if not self._is_within_date_range(case.get("date", "")):
+                        continue
                     cases.append(case)
 
                 if self.limit and len(cases) >= self.limit:

@@ -67,7 +67,8 @@ def _make_sink(args):
 
     from oldp_ingestor.sinks.api import ApiSink
 
-    client = OLDPClient.from_settings()
+    write_delay = getattr(args, "write_delay", 0.0) or 0.0
+    client = OLDPClient.from_settings(write_delay=write_delay)
     return ApiSink(client)
 
 
@@ -608,6 +609,12 @@ def main():
         default=0.2,
         help="Delay in seconds between API requests (default: 0.2, i.e. max ~300 req/min)",
     )
+    laws_parser.add_argument(
+        "--write-delay",
+        type=float,
+        default=0.0,
+        help="Delay in seconds between OLDP API write requests (default: 0.0)",
+    )
 
     cases_parser = subparsers.add_parser("cases", help="Ingest cases into OLDP")
     _case_choices = [
@@ -665,6 +672,12 @@ def main():
         type=float,
         default=0.2,
         help="Delay in seconds between API requests (default: 0.2, i.e. max ~300 req/min)",
+    )
+    cases_parser.add_argument(
+        "--write-delay",
+        type=float,
+        default=0.0,
+        help="Delay in seconds between OLDP API write requests (default: 0.0)",
     )
 
     status_parser = subparsers.add_parser(

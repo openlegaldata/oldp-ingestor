@@ -312,6 +312,8 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
                         continue
 
                     if case is not None:
+                        if not self._is_within_date_range(case.get("date", "")):
+                            continue
                         cases.append(case)
 
                     if self.limit and len(cases) >= self.limit:

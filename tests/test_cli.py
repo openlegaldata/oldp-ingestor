@@ -265,7 +265,7 @@ def test_cmd_laws_dummy_creates_and_skips(monkeypatch):
             raise exc
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -303,7 +303,7 @@ def test_cmd_laws_book_409_skips_laws(monkeypatch):
             raise exc
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -341,7 +341,7 @@ def test_cmd_laws_book_other_error(monkeypatch):
             raise exc
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -382,7 +382,7 @@ def test_cmd_laws_law_other_error(monkeypatch):
             raise exc
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -426,7 +426,7 @@ def test_cmd_laws_limit(monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -481,7 +481,7 @@ def test_cmd_laws_empty_title_fallback(monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -510,7 +510,7 @@ def test_cmd_cases_dummy_creates(monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -543,7 +543,7 @@ def test_cmd_cases_409_skipped(monkeypatch):
             raise requests.HTTPError(response=FakeResponse409())
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -577,7 +577,7 @@ def test_cmd_cases_other_error(monkeypatch):
             raise requests.HTTPError(response=FakeResponse500())
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -621,7 +621,7 @@ def test_cmd_cases_limit(monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -665,7 +665,7 @@ def test_cmd_cases_truncates_long_fields(monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -692,7 +692,7 @@ def test_cmd_info(monkeypatch, capsys):
             return {"laws": "/api/laws/", "cases": "/api/cases/"}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -853,7 +853,7 @@ def test_cmd_cases_writes_result_file(monkeypatch, tmp_path):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     rdir = str(tmp_path / "results")
@@ -902,7 +902,7 @@ def test_cmd_cases_error_counting(monkeypatch, tmp_path):
             raise requests.HTTPError(response=FakeResponse500())
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     rdir = str(tmp_path / "results")
@@ -934,7 +934,7 @@ def test_cmd_cases_no_results_dir(monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -958,7 +958,7 @@ def test_cmd_laws_writes_result_file(monkeypatch, tmp_path):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     rdir = str(tmp_path / "results")
@@ -1014,7 +1014,7 @@ def test_cmd_laws_error_counting(monkeypatch, tmp_path):
             raise exc
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     rdir = str(tmp_path / "results")
@@ -1059,7 +1059,7 @@ def test_cmd_laws_book_error_counted(monkeypatch, tmp_path):
             raise exc
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     rdir = str(tmp_path / "results")
@@ -1199,7 +1199,7 @@ def test_cmd_cases_includes_source(monkeypatch):
             return {}
 
     monkeypatch.setattr(
-        "oldp_ingestor.cli.OLDPClient.from_settings", lambda: FakeClient()
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
     )
 
     class FakeArgs:
@@ -1312,3 +1312,47 @@ def test_make_sink_no_attr_defaults_to_api(monkeypatch):
 
     sink = _make_sink(FakeArgs())
     assert isinstance(sink, ApiSink)
+
+
+# --- Write delay tests ---
+
+
+def test_cli_cases_help_includes_write_delay():
+    result = subprocess.run(
+        [sys.executable, "-m", "oldp_ingestor.cli", "cases", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--write-delay" in result.stdout
+
+
+def test_cli_laws_help_includes_write_delay():
+    result = subprocess.run(
+        [sys.executable, "-m", "oldp_ingestor.cli", "laws", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--write-delay" in result.stdout
+
+
+def test_write_delay_flag_passed(monkeypatch):
+    """--write-delay value is passed through to OLDPClient."""
+    monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")
+    monkeypatch.setenv("OLDP_API_TOKEN", "test-token")
+
+    import importlib
+
+    import oldp_ingestor.settings
+
+    importlib.reload(oldp_ingestor.settings)
+
+    from oldp_ingestor.cli import _make_sink
+
+    class FakeArgs:
+        sink = "api"
+        write_delay = 0.5
+
+    sink = _make_sink(FakeArgs())
+    assert sink.client.write_delay == 0.5

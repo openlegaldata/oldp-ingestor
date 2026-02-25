@@ -3340,6 +3340,445 @@ def test_ns_get_cases_parse_error_skips(monkeypatch):
     assert cases == []
 
 
+# --- CaseProvider date filtering ---
+
+
+def test_case_provider_date_range_no_filters():
+    """No date filters set — all cases pass."""
+    provider = CaseProvider()
+    assert provider._is_within_date_range("2024-06-15") is True
+    assert provider._is_within_date_range("") is True
+    assert provider._is_within_date_range("bad") is True
+
+
+def test_case_provider_date_range_from():
+    provider = CaseProvider()
+    provider.date_from = "2025-01-01"
+    assert provider._is_within_date_range("2025-06-15") is True
+    assert provider._is_within_date_range("2025-01-01") is True
+    assert provider._is_within_date_range("2024-12-31") is False
+
+
+def test_case_provider_date_range_to():
+    provider = CaseProvider()
+    provider.date_to = "2025-12-31"
+    assert provider._is_within_date_range("2025-06-15") is True
+    assert provider._is_within_date_range("2025-12-31") is True
+    assert provider._is_within_date_range("2026-01-01") is False
+
+
+def test_case_provider_date_range_both():
+    provider = CaseProvider()
+    provider.date_from = "2025-01-01"
+    provider.date_to = "2025-12-31"
+    assert provider._is_within_date_range("2025-06-15") is True
+    assert provider._is_within_date_range("2024-12-31") is False
+    assert provider._is_within_date_range("2026-01-01") is False
+
+
+def test_case_provider_date_range_missing_date():
+    """Cases without a date should still be included (not silently dropped)."""
+    provider = CaseProvider()
+    provider.date_from = "2025-01-01"
+    provider.date_to = "2025-12-31"
+    assert provider._is_within_date_range("") is True
+    assert provider._is_within_date_range("bad") is True
+
+
+# --- NS date filtering integration ---
+
+
+def test_ns_date_filter_from(monkeypatch):
+    """NS provider excludes cases before date_from."""
+    from oldp_ingestor.providers.de.ns import NsCaseProvider
+
+    search_html = """<html><body>
+        <a href="/browse/document/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">Link</a>
+    </body></html>"""
+
+    case_html = """<html><body>
+        <article class="wkde-case wkde-document">
+        <section class="wkde-bibliography"><dl>
+            <dt>Gericht</dt><dd>AG Hannover</dd>
+            <dt>Datum</dt><dd>15.03.2024</dd>
+            <dt>Aktenzeichen</dt><dd>5 C 123/24</dd>
+        </dl></section>
+        <section class="wkde-document-body">
+            <div class="tenor"><p>Die Klage wird abgewiesen.</p></div>
+        </section>
+        </article>
+    </body></html>"""
+
+    call_count = [0]
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        call_count[0] += 1
+        resp = FakeResp()
+        if "/search" in url:
+            if call_count[0] <= 1:
+                resp.text = search_html
+            else:
+                resp.text = "<html><body></body></html>"
+        else:
+            resp.text = case_html
+        return resp
+
+    monkeypatch.setattr(NsCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NsCaseProvider(date_from="2025-01-01", request_delay=0)
+    cases = provider.get_cases()
+    assert len(cases) == 0  # case from 2024 excluded
+
+
+def test_ns_date_filter_to(monkeypatch):
+    """NS provider excludes cases after date_to."""
+    from oldp_ingestor.providers.de.ns import NsCaseProvider
+
+    search_html = """<html><body>
+        <a href="/browse/document/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">Link</a>
+    </body></html>"""
+
+    case_html = """<html><body>
+        <article class="wkde-case wkde-document">
+        <section class="wkde-bibliography"><dl>
+            <dt>Gericht</dt><dd>AG Hannover</dd>
+            <dt>Datum</dt><dd>15.03.2026</dd>
+            <dt>Aktenzeichen</dt><dd>5 C 123/26</dd>
+        </dl></section>
+        <section class="wkde-document-body">
+            <div class="tenor"><p>Die Klage wird abgewiesen.</p></div>
+        </section>
+        </article>
+    </body></html>"""
+
+    call_count = [0]
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        call_count[0] += 1
+        resp = FakeResp()
+        if "/search" in url:
+            if call_count[0] <= 1:
+                resp.text = search_html
+            else:
+                resp.text = "<html><body></body></html>"
+        else:
+            resp.text = case_html
+        return resp
+
+    monkeypatch.setattr(NsCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NsCaseProvider(date_to="2025-12-31", request_delay=0)
+    cases = provider.get_cases()
+    assert len(cases) == 0  # case from 2026-03-15 excluded
+
+
+def test_ns_date_filter_range(monkeypatch):
+    """NS provider includes cases within date range."""
+    from oldp_ingestor.providers.de.ns import NsCaseProvider
+
+    search_html = """<html><body>
+        <a href="/browse/document/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">Link</a>
+    </body></html>"""
+
+    case_html = """<html><body>
+        <article class="wkde-case wkde-document">
+        <section class="wkde-bibliography"><dl>
+            <dt>Gericht</dt><dd>AG Hannover</dd>
+            <dt>Datum</dt><dd>15.06.2025</dd>
+            <dt>Aktenzeichen</dt><dd>5 C 123/25</dd>
+        </dl></section>
+        <section class="wkde-document-body">
+            <div class="tenor"><p>Die Klage wird abgewiesen.</p></div>
+        </section>
+        </article>
+    </body></html>"""
+
+    call_count = [0]
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        call_count[0] += 1
+        resp = FakeResp()
+        if "/search" in url:
+            if call_count[0] <= 1:
+                resp.text = search_html
+            else:
+                resp.text = "<html><body></body></html>"
+        else:
+            resp.text = case_html
+        return resp
+
+    monkeypatch.setattr(NsCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NsCaseProvider(
+        date_from="2025-01-01", date_to="2025-12-31", request_delay=0
+    )
+    cases = provider.get_cases()
+    assert len(cases) == 1
+
+
+def test_ns_date_filter_none(monkeypatch):
+    """NS provider without date filters returns all cases."""
+    from oldp_ingestor.providers.de.ns import NsCaseProvider
+
+    search_html = """<html><body>
+        <a href="/browse/document/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">Link</a>
+    </body></html>"""
+
+    case_html = """<html><body>
+        <article class="wkde-case wkde-document">
+        <section class="wkde-bibliography"><dl>
+            <dt>Gericht</dt><dd>AG Hannover</dd>
+            <dt>Datum</dt><dd>15.03.2026</dd>
+            <dt>Aktenzeichen</dt><dd>5 C 123/26</dd>
+        </dl></section>
+        <section class="wkde-document-body">
+            <div class="tenor"><p>Die Klage wird abgewiesen.</p></div>
+        </section>
+        </article>
+    </body></html>"""
+
+    call_count = [0]
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        call_count[0] += 1
+        resp = FakeResp()
+        if "/search" in url:
+            if call_count[0] <= 1:
+                resp.text = search_html
+            else:
+                resp.text = "<html><body></body></html>"
+        else:
+            resp.text = case_html
+        return resp
+
+    monkeypatch.setattr(NsCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NsCaseProvider(request_delay=0)
+    cases = provider.get_cases()
+    assert len(cases) == 1
+
+
+def test_ns_date_filter_missing_date(monkeypatch):
+    """NS cases without a date field are still included."""
+    from oldp_ingestor.providers.de.ns import NsCaseProvider
+
+    search_html = """<html><body>
+        <a href="/browse/document/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">Link</a>
+    </body></html>"""
+
+    # Case with empty date
+    case_html = """<html><body>
+        <article class="wkde-case wkde-document">
+        <section class="wkde-bibliography"><dl>
+            <dt>Gericht</dt><dd>AG Hannover</dd>
+            <dt>Datum</dt><dd></dd>
+            <dt>Aktenzeichen</dt><dd>5 C 123/26</dd>
+        </dl></section>
+        <section class="wkde-document-body">
+            <div class="tenor"><p>Die Klage wird abgewiesen.</p></div>
+        </section>
+        </article>
+    </body></html>"""
+
+    call_count = [0]
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        call_count[0] += 1
+        resp = FakeResp()
+        if "/search" in url:
+            if call_count[0] <= 1:
+                resp.text = search_html
+            else:
+                resp.text = "<html><body></body></html>"
+        else:
+            resp.text = case_html
+        return resp
+
+    monkeypatch.setattr(NsCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NsCaseProvider(
+        date_from="2025-01-01", date_to="2025-12-31", request_delay=0
+    )
+    cases = provider.get_cases()
+    assert len(cases) == 1  # not silently dropped
+
+
+# --- Juris date filtering integration ---
+
+
+def test_juris_date_filter_from(monkeypatch):
+    """Juris provider excludes cases before date_from."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
+    detail_html = """<html><body><table>
+        <tr><td class="TD30"><strong>Gericht:</strong></td>
+        <td class="TD70">AG Berlin</td></tr>
+        <tr><td class="TD30"><strong>Entscheidungsdatum:</strong></td>
+        <td class="TD70">01.05.2024</td></tr>
+        <tr><td class="TD30"><strong>Aktenzeichen:</strong></td>
+        <td class="TD70">1 C 1/24</td></tr>
+    </table>
+    <div class="docLayoutText"><p>This is the decision content.</p></div>
+    </body></html>"""
+
+    page_call_count = [0]
+
+    def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
+        page_call_count[0] += 1
+        if "Suchportlet" in url:
+            if page_call_count[0] <= 1:
+                return search_result_html
+            return "<html><body>empty</body></html>"
+        return detail_html
+
+    monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
+    monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
+
+    provider = BbBeCaseProvider(date_from="2025-01-01", limit=10, request_delay=0)
+    cases = provider.get_cases()
+    assert len(cases) == 0  # 2024-05-01 excluded
+
+
+def test_juris_date_filter_to(monkeypatch):
+    """Juris provider excludes cases after date_to."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
+    detail_html = """<html><body><table>
+        <tr><td class="TD30"><strong>Gericht:</strong></td>
+        <td class="TD70">AG Berlin</td></tr>
+        <tr><td class="TD30"><strong>Entscheidungsdatum:</strong></td>
+        <td class="TD70">01.05.2026</td></tr>
+        <tr><td class="TD30"><strong>Aktenzeichen:</strong></td>
+        <td class="TD70">1 C 1/26</td></tr>
+    </table>
+    <div class="docLayoutText"><p>This is the decision content.</p></div>
+    </body></html>"""
+
+    page_call_count = [0]
+
+    def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
+        page_call_count[0] += 1
+        if "Suchportlet" in url:
+            if page_call_count[0] <= 1:
+                return search_result_html
+            return "<html><body>empty</body></html>"
+        return detail_html
+
+    monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
+    monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
+
+    provider = BbBeCaseProvider(date_to="2025-12-31", limit=10, request_delay=0)
+    cases = provider.get_cases()
+    assert len(cases) == 0  # 2026-05-01 excluded
+
+
+def test_juris_date_filter_range(monkeypatch):
+    """Juris provider includes cases within date range."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
+    detail_html = """<html><body><table>
+        <tr><td class="TD30"><strong>Gericht:</strong></td>
+        <td class="TD70">AG Berlin</td></tr>
+        <tr><td class="TD30"><strong>Entscheidungsdatum:</strong></td>
+        <td class="TD70">15.06.2025</td></tr>
+        <tr><td class="TD30"><strong>Aktenzeichen:</strong></td>
+        <td class="TD70">1 C 1/25</td></tr>
+    </table>
+    <div class="docLayoutText"><p>This is the decision content.</p></div>
+    </body></html>"""
+
+    page_call_count = [0]
+
+    def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
+        page_call_count[0] += 1
+        if "Suchportlet" in url:
+            if page_call_count[0] <= 1:
+                return search_result_html
+            return "<html><body>empty</body></html>"
+        return detail_html
+
+    monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
+    monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
+
+    provider = BbBeCaseProvider(
+        date_from="2025-01-01", date_to="2025-12-31", limit=10, request_delay=0
+    )
+    cases = provider.get_cases()
+    assert len(cases) == 1
+
+
+def test_juris_date_filter_none(monkeypatch):
+    """Juris provider without date filters returns all cases."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
+    detail_html = """<html><body><table>
+        <tr><td class="TD30"><strong>Gericht:</strong></td>
+        <td class="TD70">AG Berlin</td></tr>
+        <tr><td class="TD30"><strong>Entscheidungsdatum:</strong></td>
+        <td class="TD70">01.05.2024</td></tr>
+        <tr><td class="TD30"><strong>Aktenzeichen:</strong></td>
+        <td class="TD70">1 C 1/24</td></tr>
+    </table>
+    <div class="docLayoutText"><p>This is the decision content.</p></div>
+    </body></html>"""
+
+    page_call_count = [0]
+
+    def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
+        page_call_count[0] += 1
+        if "Suchportlet" in url:
+            if page_call_count[0] <= 1:
+                return search_result_html
+            return "<html><body>empty</body></html>"
+        return detail_html
+
+    monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
+    monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
+
+    provider = BbBeCaseProvider(limit=10, request_delay=0)
+    cases = provider.get_cases()
+    assert len(cases) == 1
+
+
 # --- SOURCE attribute tests ---
 
 
