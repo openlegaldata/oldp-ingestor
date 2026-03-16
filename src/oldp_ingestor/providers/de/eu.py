@@ -25,6 +25,7 @@ from oldp_ingestor.providers.scraper_common import ScraperBaseClient
 logger = logging.getLogger(__name__)
 
 EURLEX_BASE_URL = "https://eur-lex.europa.eu"
+CELLAR_BASE_URL = "https://publications.europa.eu"
 CELLAR_SPARQL_URL = "https://publications.europa.eu/webapi/rdf/sparql"
 EURLEX_SPARQL_PAGE_SIZE = 100
 EURLEX_MIN_CONTENT_LEN = 10
@@ -112,27 +113,28 @@ class EuCaseProvider(ScraperBaseClient, CaseProvider):
         return f"""\
 PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-SELECT DISTINCT ?ecli ?date
+SELECT DISTINCT ?ecli ?date ?celex
 WHERE {{
   ?work cdm:case-law_ecli ?ecli .
   ?work cdm:work_date_document ?date .
+  ?work cdm:resource_legal_id_celex ?celex .
   {filter_clause}
 }}
 ORDER BY DESC(?date)
 LIMIT {limit}
 OFFSET {offset}"""
 
-    def _search_eclis(self) -> list[str]:
-        """Search CELLAR SPARQL endpoint for ECLI identifiers.
+    def _search_eclis(self) -> list[dict]:
+        """Search CELLAR SPARQL endpoint for ECLI identifiers and metadata.
 
-        Returns list of ECLI strings (e.g. 'ECLI:EU:C:2024:123').
+        Returns list of dicts with keys: ecli, date, celex.
         """
-        eclis: list[str] = []
+        results: list[dict] = []
         offset = 0
-        effective_limit = self.limit or 10000  # EUR-Lex max is 10000
+        effective_limit = self.limit or 10000
 
-        while len(eclis) < effective_limit:
-            page_size = min(EURLEX_SPARQL_PAGE_SIZE, effective_limit - len(eclis))
+        while len(results) < effective_limit:
+            page_size = min(EURLEX_SPARQL_PAGE_SIZE, effective_limit - len(results))
             query = self._build_sparql_query(page_size, offset)
 
             resp = self._get(
@@ -146,77 +148,87 @@ OFFSET {offset}"""
             if not bindings:
                 break
 
-            page_eclis = [b["ecli"]["value"] for b in bindings if "ecli" in b]
-            eclis.extend(page_eclis)
+            page_results = [
+                {
+                    "ecli": b["ecli"]["value"],
+                    "date": b.get("date", {}).get("value", ""),
+                    "celex": b.get("celex", {}).get("value", ""),
+                }
+                for b in bindings
+                if "ecli" in b
+            ]
+            results.extend(page_results)
 
             logger.info(
                 "SPARQL page (offset %d): found %d ECLIs (total %d)",
                 offset,
-                len(page_eclis),
-                len(eclis),
+                len(page_results),
+                len(results),
             )
 
-            if len(page_eclis) < page_size:
-                break  # last page
+            if len(page_results) < page_size:
+                break
 
             offset += page_size
 
-        if self.limit and len(eclis) > self.limit:
-            eclis = eclis[: self.limit]
+        if self.limit and len(results) > self.limit:
+            results = results[: self.limit]
 
-        return eclis
+        return results
 
-    def _fetch_case_details(self, ecli: str) -> dict | None:
-        """Fetch XML detail page for an ECLI and extract metadata.
+    def _fetch_case_content(self, celex: str) -> str | None:
+        """Fetch HTML full text from CELLAR via CELEX number.
 
-        Returns dict with date, title, file_number, type, ecli or None on failure.
-        """
-        xml_url = f"{EURLEX_BASE_URL}/legal-content/DE/TXT/XML/?uri=ECLI:{ecli}"
-
-        try:
-            resp = self._get(xml_url)
-        except Exception as exc:
-            logger.warning("Failed to fetch XML for %s: %s", ecli, exc)
-            return None
-
-        try:
-            return _parse_case_details_from_xml(resp.content, ecli)
-        except Exception as exc:
-            logger.warning("Failed to parse XML for %s: %s", ecli, exc)
-            return None
-
-    def _fetch_case_content(self, ecli: str) -> str | None:
-        """Fetch HTML full text for an ECLI and extract body content.
+        Uses publications.europa.eu (CELLAR) which doesn't have WAF,
+        unlike eur-lex.europa.eu which blocks non-browser requests.
 
         Returns HTML body string or None on failure.
         """
-        html_url = f"{EURLEX_BASE_URL}/legal-content/DE/TXT/HTML/?uri=ECLI:{ecli}"
+        html_url = f"{CELLAR_BASE_URL}/resource/celex/{celex}"
 
         try:
-            resp = self._get(html_url)
+            resp = self._get(
+                html_url, headers={"Accept": "text/html", "Accept-Language": "de"}
+            )
         except Exception as exc:
-            logger.warning("Failed to fetch HTML for %s: %s", ecli, exc)
+            logger.warning("Failed to fetch HTML for CELEX %s: %s", celex, exc)
+            return None
+
+        if resp.status_code != 200 or len(resp.text) < EURLEX_MIN_CONTENT_LEN:
+            logger.warning(
+                "Empty/missing content for CELEX %s (status %d)",
+                celex,
+                resp.status_code,
+            )
             return None
 
         try:
             return _extract_html_content(resp.text, html_url)
         except Exception as exc:
-            logger.warning("Failed to parse HTML for %s: %s", ecli, exc)
+            logger.warning("Failed to parse HTML for CELEX %s: %s", celex, exc)
             return None
 
     def get_cases(self) -> list[dict]:
-        """Fetch cases from EUR-Lex: SPARQL search -> XML details -> HTML content."""
+        """Fetch cases from EUR-Lex: SPARQL search -> CELLAR HTML content.
+
+        Metadata (date, file_number, type) is extracted from SPARQL + CELEX.
+        Content HTML is fetched from CELLAR via CELEX number.
+        """
         cases: list[dict] = []
 
-        eclis = self._search_eclis()
-        logger.info("Found %d ECLI(s) to process.", len(eclis))
+        search_results = self._search_eclis()
+        logger.info("Found %d ECLI(s) to process.", len(search_results))
 
-        for ecli in eclis:
-            details = self._fetch_case_details(ecli)
-            if details is None:
+        for item in search_results:
+            ecli = item["ecli"]
+            celex = item["celex"]
+            date = item["date"]
+
+            if not celex:
+                logger.warning("No CELEX for %s, skipping", ecli)
                 continue
 
-            content = self._fetch_case_content(ecli)
+            content = self._fetch_case_content(celex)
             if content is None:
                 continue
 
@@ -226,18 +238,20 @@ OFFSET {offset}"""
                 )
                 continue
 
+            # Extract file number from ECLI or title
+            file_number = _extract_file_number_from_ecli(ecli)
+            case_type = _get_case_type_from_celex(celex)
+
             case: dict = {
                 "court_name": "Europäischer Gerichtshof",
-                "file_number": details["file_number"],
-                "date": details["date"],
+                "file_number": file_number,
+                "date": date,
                 "content": content,
                 "ecli": ecli,
             }
 
-            if details.get("title"):
-                case["title"] = details["title"]
-            if details.get("type"):
-                case["type"] = details["type"]
+            if case_type:
+                case["type"] = case_type
 
             cases.append(case)
 
@@ -327,6 +341,22 @@ def _extract_file_number(tree, title: str) -> str:
 
     # Replace Unicode non-breaking hyphen with ASCII dash
     return file_number.replace(_UNICODE_DASH, "-")
+
+
+def _extract_file_number_from_ecli(ecli: str) -> str:
+    """Extract file number from ECLI string.
+
+    ECLI format: ECLI:EU:C:2026:180
+    The numeric part at the end is the case number within the court's year.
+    For a useful file_number, we use the format 'C-180/26' derived from the ECLI.
+    """
+    parts = ecli.split(":")
+    if len(parts) >= 5:
+        court = parts[2]  # C, T, F
+        year = parts[3]  # 2026
+        number = parts[4]  # 180
+        return f"{court}-{number}/{year[2:]}"
+    return ecli
 
 
 def _get_case_type_from_celex(celex: str) -> str:

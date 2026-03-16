@@ -53,19 +53,21 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
     def _build_datum_param(self) -> str:
         """Build the datum form parameter for date range filtering.
 
-        The OVG search accepts dates in formats: DD.MM.YYYY, MM.YYYY, YYYY,
-        and ranges as 'FROM-TO' (e.g. '1.1.2025-31.12.2025').
+        The OVG search supports YYYY and YYYY-YYYY year ranges.
+        DD.MM.YYYY-DD.MM.YYYY ranges return 0 results (not supported).
         """
-        if self.date_from and self.date_to:
-            d_from = self._iso_to_german(self.date_from)
-            d_to = self._iso_to_german(self.date_to)
-            return f"{d_from}-{d_to}"
-        if self.date_from:
-            d_from = self._iso_to_german(self.date_from)
-            return f"{d_from}-31.12.2099"
-        if self.date_to:
-            d_to = self._iso_to_german(self.date_to)
-            return f"1.1.1990-{d_to}"
+        from_year = self.date_from[:4] if self.date_from else ""
+        to_year = self.date_to[:4] if self.date_to else ""
+
+        if from_year and to_year:
+            if from_year == to_year:
+                return from_year
+            return f"{from_year}-{to_year}"
+        if from_year:
+            # Just the year — the search interprets this as "from this year onwards"
+            return from_year
+        if to_year:
+            return f"1990-{to_year}"
         return ""
 
     @staticmethod

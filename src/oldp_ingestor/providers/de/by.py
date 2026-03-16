@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 BY_BASE_URL = "https://www.gesetze-bayern.de"
 
+# Court name normalization: Bavaria XML uses short names like "VGH München"
+# that the OLDP court resolver can't match. Map to full names used in the DB.
+_COURT_NAME_MAP = {
+    "VGH München": "Bayerischer Verwaltungsgerichtshof",
+    "BayObLG München": "Bayerisches Oberstes Landesgericht",
+    "VerfGH München": "Bayerischer Verfassungsgerichtshof",
+}
+
 # Case type abbreviation expansion
 _TYPE_MAP = {
     "Bes": "Beschluss",
@@ -97,6 +105,7 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
             tree, "//metadaten/gericht/gerort", default=""
         )
         court_name = f"{court_type} {court_location}".strip()
+        court_name = _COURT_NAME_MAP.get(court_name, court_name)
 
         case_type_raw = self._xpath_text(tree, "//metadaten/doktyp", default="")
         case_type = _expand_case_type(case_type_raw)

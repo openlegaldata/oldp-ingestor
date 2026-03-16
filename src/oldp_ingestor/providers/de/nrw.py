@@ -50,6 +50,7 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
     ):
         super().__init__(base_url=NRW_BASE_URL, request_delay=request_delay)
         self.court_type = court_type or ""
+        # NRW search form date filter is unreliable — use client-side filtering
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit
@@ -64,9 +65,9 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
             "absenden": "Suchen",
             "schlagwoerter": "",
             "method": "stem",
-            "von": self.date_from,
+            "von": "",
             "aktenzeichen": "",
-            "bis": self.date_to,
+            "bis": "",
             "bis2": "",
             "advanced_search": "false",
             "sortieren_nach": "datum_absteigend",
@@ -192,6 +193,8 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
                     continue
 
                 if case is not None:
+                    if not self._is_within_date_range(case.get("date", "")):
+                        continue
                     cases.append(case)
 
                 if self.limit and len(cases) >= self.limit:
