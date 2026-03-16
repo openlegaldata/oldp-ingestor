@@ -211,6 +211,14 @@ LAW_FIXTURES = [
     },
 ]
 
+_DUMMY_CONTENT = (
+    "<p>BUNDESGERICHTSHOF IM NAMEN DES VOLKES URTEIL I ZR 1/21 Verkündet am: "
+    "15. Januar 2024 in dem Rechtsstreit der Kläger gegen die Beklagte wegen "
+    "Unterlassung. Der I. Zivilsenat des Bundesgerichtshofs hat auf die mündliche "
+    "Verhandlung vom 15. Januar 2024 durch den Vorsitzenden Richter für Recht erkannt: "
+    "Die Revision der Beklagten gegen das Urteil des Oberlandesgerichts wird zurückgewiesen.</p>"
+)
+
 CASE_FIXTURES = [
     {
         "model": "courts.court",
@@ -224,7 +232,7 @@ CASE_FIXTURES = [
             "court": 1,
             "file_number": "I ZR 1/21",
             "date": "2024-01-15",
-            "content": "<p>Content</p>",
+            "content": _DUMMY_CONTENT,
         },
     },
 ]
@@ -462,7 +470,7 @@ def test_cmd_laws_empty_title_fallback(monkeypatch):
             "pk": 1,
             "fields": {
                 "book": 1,
-                "content": "<p>C</p>",
+                "content": _DUMMY_CONTENT,
                 "title": "",
                 "section": "§ 1",
                 "slug": "s",
@@ -606,7 +614,7 @@ def test_cmd_cases_limit(monkeypatch):
                 "court": 1,
                 "file_number": f"ZR {i}/21",
                 "date": "2024-01-01",
-                "content": "<p>C</p>",
+                "content": _DUMMY_CONTENT,
             },
         }
         for i in range(1, 4)
@@ -650,7 +658,7 @@ def test_cmd_cases_truncates_long_fields(monkeypatch):
                 "court": 1,
                 "file_number": "Y" * 200,
                 "date": "2024-01-01",
-                "content": "<p>C</p>",
+                "content": _DUMMY_CONTENT,
                 "title": "Z" * 300,
             },
         },

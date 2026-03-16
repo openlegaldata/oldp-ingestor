@@ -15,6 +15,7 @@ from oldp_ingestor.court_analysis import (
     parse_missing_courts,
 )
 from oldp_ingestor.providers.base import CaseProvider, LawProvider
+from oldp_ingestor.validation import validate_case
 from oldp_ingestor.results import (
     check_health,
     format_status_table,
@@ -26,7 +27,15 @@ logger = logging.getLogger("oldp_ingestor")
 
 
 def _write_result_and_return(
-    args, command, provider_name, started_at, created, skipped, errors, status
+    args,
+    command,
+    provider_name,
+    started_at,
+    created,
+    skipped,
+    errors,
+    status,
+    invalid=0,
 ):
     """Write result file (if configured) and return the appropriate exit code."""
     finished_at = datetime.now(timezone.utc)
@@ -40,6 +49,7 @@ def _write_result_and_return(
             finished_at,
             created=created,
             skipped=skipped,
+            invalid=invalid,
             errors=errors,
             status=status,
         )
@@ -249,6 +259,7 @@ def cmd_cases(args):
 
         cases_created = 0
         cases_skipped = 0
+        cases_invalid = 0
 
         for case in cases:
             case_label = case.get("file_number", "?")
@@ -266,6 +277,16 @@ def cmd_cases(args):
                     case[field] = case[field][:max_len]
             # Remove None values (API rejects null for optional fields)
             case = {k: v for k, v in case.items() if v is not None}
+
+            # Validate before sending to API
+            validation_error = validate_case(case)
+            if validation_error:
+                cases_invalid += 1
+                logger.warning(
+                    "Skipped invalid case %s: %s", case_label, validation_error
+                )
+                continue
+
             # Inject source from provider
             if provider.SOURCE.get("name"):
                 case["source"] = provider.SOURCE
@@ -288,9 +309,10 @@ def cmd_cases(args):
                     logger.error("Error creating case %s: %s%s", case_label, e, detail)
 
         logger.info(
-            "Summary: cases created=%d skipped=%d errors=%d",
+            "Summary: cases created=%d skipped=%d invalid=%d errors=%d",
             cases_created,
             cases_skipped,
+            cases_invalid,
             cases_errors,
         )
 
@@ -304,6 +326,7 @@ def cmd_cases(args):
             started_at,
             created=cases_created,
             skipped=cases_skipped,
+            invalid=cases_invalid,
             errors=cases_errors,
             status=status,
         )

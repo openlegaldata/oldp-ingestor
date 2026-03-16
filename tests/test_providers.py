@@ -4113,7 +4113,13 @@ def test_eu_build_sparql_query():
 
 
 def test_eu_get_cases_with_mock(monkeypatch):
-    """Full EU integration test with monkeypatched HTTP."""
+    """Full EU integration test with monkeypatched HTTP.
+
+    The EU provider now uses:
+    1. SPARQL for ECLI + CELEX + date
+    2. CELLAR (/resource/celex/) for HTML content
+    Metadata (file_number, type) is derived from ECLI/CELEX, not XML.
+    """
     import json
 
     from oldp_ingestor.providers.de.eu import EuCaseProvider
@@ -4125,24 +4131,18 @@ def test_eu_get_cases_with_mock(monkeypatch):
                     {
                         "ecli": {"value": "ECLI:EU:C:2024:100"},
                         "date": {"value": "2024-05-20"},
+                        "celex": {"value": "62024CJ0100"},
                     }
                 ]
             }
         }
     )
 
-    xml_detail = b"""<?xml version="1.0" encoding="UTF-8"?>
-    <root>
-      <WORK_DATE_DOCUMENT><VALUE>2024-05-20</VALUE></WORK_DATE_DOCUMENT>
-      <RESOURCE_LEGAL_ID_CELEX><VALUE>62024CJ0100</VALUE></RESOURCE_LEGAL_ID_CELEX>
-      <EXPRESSION>
-        <EXPRESSION_USES_LANGUAGE><IDENTIFIER>DEU</IDENTIFIER></EXPRESSION_USES_LANGUAGE>
-        <EXPRESSION_TITLE><VALUE>Urteil C-100/24 vom 20.05.2024</VALUE></EXPRESSION_TITLE>
-      </EXPRESSION>
-    </root>"""
-
     html_content = (
-        "<html><body><p>Full decision text here with enough content.</p></body></html>"
+        "<html><body><p>URTEIL DES GERICHTSHOFS (Dritte Kammer) "
+        "20. Mai 2024 in der Rechtssache C-100/24 betreffend ein "
+        "Vorabentscheidungsersuchen. Full decision text here with "
+        "enough content to pass validation checks.</p></body></html>"
     )
 
     class FakeResp:
@@ -4161,10 +4161,7 @@ def test_eu_get_cases_with_mock(monkeypatch):
         if "sparql" in url:
             resp.text = sparql_response
             resp.content = sparql_response.encode("utf-8")
-        elif "XML" in url:
-            resp.text = xml_detail.decode("utf-8")
-            resp.content = xml_detail
-        elif "HTML" in url:
+        elif "resource/celex" in url:
             resp.text = html_content
             resp.content = html_content.encode("utf-8")
         return resp
@@ -4181,7 +4178,6 @@ def test_eu_get_cases_with_mock(monkeypatch):
     assert case["date"] == "2024-05-20"
     assert case["ecli"] == "ECLI:EU:C:2024:100"
     assert case["type"] == "Urteil"
-    assert case["title"] == "Urteil C-100/24 vom 20.05.2024"
     assert "Full decision text" in case["content"]
 
 
@@ -4659,19 +4655,29 @@ def test_sn_ovg_iso_to_german():
 def test_sn_ovg_build_datum_param():
     from oldp_ingestor.providers.de.sn_ovg import SnOvgCaseProvider
 
+    # Same year → just the year
     p1 = SnOvgCaseProvider(
         date_from="2025-01-01", date_to="2025-12-31", request_delay=0
     )
-    assert p1._build_datum_param() == "1.1.2025-31.12.2025"
+    assert p1._build_datum_param() == "2025"
 
+    # Different years → year range
+    p1b = SnOvgCaseProvider(
+        date_from="2024-01-01", date_to="2025-12-31", request_delay=0
+    )
+    assert p1b._build_datum_param() == "2024-2025"
+
+    # From only → just the from year
     p2 = SnOvgCaseProvider(date_from="2025-06-01", request_delay=0)
-    assert "1.6.2025" in p2._build_datum_param()
+    assert p2._build_datum_param() == "2025"
 
+    # No dates → empty
     p3 = SnOvgCaseProvider(request_delay=0)
     assert p3._build_datum_param() == ""
 
+    # To only → range from 1990
     p4 = SnOvgCaseProvider(date_to="2025-12-31", request_delay=0)
-    assert p4._build_datum_param() == "1.1.1990-31.12.2025"
+    assert p4._build_datum_param() == "1990-2025"
 
 
 def test_sn_ovg_document_no_pdf_skips():
@@ -4812,7 +4818,7 @@ def test_sn_ovg_get_cases_with_date_filter(monkeypatch):
     # Verify the datum parameter was passed correctly
     assert len(post_data_captured) == 1
     assert "datum" in post_data_captured[0]
-    assert post_data_captured[0]["datum"] == "1.1.2025-31.12.2026"
+    assert post_data_captured[0]["datum"] == "2025-2026"
 
 
 def test_sn_ovg_search_failure(monkeypatch):
