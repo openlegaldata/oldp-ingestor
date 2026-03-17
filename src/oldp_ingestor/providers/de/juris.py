@@ -70,19 +70,26 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
         self.date_to = date_to
         self.limit = limit
 
+    # Whether the initial search with date filters has been submitted
+    _search_submitted: bool = False
+
     def _search_url(self, page: int = 1) -> str:
         """Build search URL for a given page.
 
-        The old Jetspeed portlet URLs are redirected by the SPA but still
-        trigger the search with the embedded query parameters.
+        For page 1, if date filters are set, we use Playwright form interaction
+        (see _submit_search_with_dates). Otherwise use the old Jetspeed URL.
+        For page > 1, always use the pagination URL.
         """
-        if page == 1:
+        if page == 1 and not self._search_submitted:
             return (
                 f"{self.BASE_URL}/js_peid/Suchportlet1/media-type/html"
                 f"?formhaschangedvalue=yes&eventSubmit_doSearch=suchen"
                 f"&action=portlets.jw.MainAction&deletemask=no&wt_form=1"
                 f"&form=bsstdFastSearch&desc=all&query=*&standardsuche=suchen"
             )
+        elif page == 1:
+            # Already submitted via form — return None to signal skip
+            return ""
         else:
             pos = 1 + (page - 2) * 25
             return (
@@ -93,6 +100,80 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
                 f"&currentNavigationPosition={pos}&numberofresults=15000"
                 f"&sortmethod=standard&standardsuche=suchen"
             )
+
+    @staticmethod
+    def _iso_to_german_date(iso_date: str) -> str:
+        """Convert YYYY-MM-DD to DD.MM.YYYY."""
+        parts = iso_date.split("-")
+        if len(parts) == 3:
+            return f"{parts[2]}.{parts[1]}.{parts[0]}"
+        return iso_date
+
+    def _submit_search_with_dates(self) -> str:
+        """Use Playwright to fill the extended search form with date fields.
+
+        Clicks 'Erweiterte Suche', fills DatumInputFrom/DatumInputTo,
+        submits the search, and returns the rendered HTML.
+        """
+        self._ensure_browser()
+
+        search_url = f"{self.BASE_URL}{self.SEARCH_PATH}"
+        logger.info(
+            "Submitting extended search with dates: %s to %s",
+            self.date_from,
+            self.date_to,
+        )
+
+        if self.request_delay > 0:
+            import time
+
+            time.sleep(self.request_delay)
+
+        page = self._context.new_page()
+        try:
+            page.goto(search_url, timeout=self.SPA_TIMEOUT)
+            page.wait_for_load_state("networkidle", timeout=self.SPA_TIMEOUT)
+
+            # Click "Erweiterte Suche" to reveal date fields
+            try:
+                ext_search = page.locator("span.extended-search__label")
+                ext_search.wait_for(timeout=self.SPA_TIMEOUT)
+                ext_search.click()
+                # Wait for the date fields to appear
+                page.wait_for_selector(
+                    "#DatumInputFrom, .extended-search-datefield__input",
+                    timeout=self.SPA_TIMEOUT,
+                )
+            except Exception as exc:
+                logger.warning("Could not open extended search: %s", exc)
+                return page.content()
+
+            # Fill date fields
+            if self.date_from:
+                from_field = page.locator("#DatumInputFrom")
+                from_field.fill(self._iso_to_german_date(self.date_from))
+
+            if self.date_to:
+                to_field = page.locator("#DatumInputTo")
+                to_field.fill(self._iso_to_german_date(self.date_to))
+
+            # Submit the search
+            submit_btn = page.locator(
+                'button[type="submit"], input[type="submit"], '
+                'button:has-text("Suchen"), .search-form__button'
+            ).first
+            submit_btn.click()
+
+            # Wait for results to load
+            try:
+                page.wait_for_selector(self.WAIT_SELECTOR, timeout=self.SPA_TIMEOUT)
+            except Exception:
+                logger.warning("Timeout waiting for search results after date submit")
+
+            self._search_submitted = True
+            return page.content()
+        finally:
+            page.close()
 
     def _get_case_ids_from_page(self, url: str) -> list[str]:
         """Render search page and extract doc IDs.
@@ -280,18 +361,28 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
     def get_cases(self) -> list[dict]:
         """Search portal, fetch and parse case details."""
         cases: list[dict] = []
+        self._search_submitted = False
 
         try:
             page = 1
             empty_pages = 0
 
             while True:
-                url = self._search_url(page)
-                try:
-                    ids = self._get_case_ids_from_page(url)
-                except Exception as exc:
-                    logger.warning("Failed to search page %d: %s", page, exc)
-                    break
+                # For page 1 with date filters, use the extended search form
+                if page == 1 and (self.date_from or self.date_to):
+                    try:
+                        html = self._submit_search_with_dates()
+                        ids = list(set(re.findall(r"/document/([A-Z0-9]+)/", html)))
+                    except Exception as exc:
+                        logger.warning("Failed to submit date search: %s", exc)
+                        break
+                else:
+                    url = self._search_url(page)
+                    try:
+                        ids = self._get_case_ids_from_page(url)
+                    except Exception as exc:
+                        logger.warning("Failed to search page %d: %s", page, exc)
+                        break
 
                 if not ids:
                     empty_pages += 1

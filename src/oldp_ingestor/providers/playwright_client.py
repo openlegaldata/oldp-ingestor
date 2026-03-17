@@ -37,7 +37,23 @@ class PlaywrightBaseClient:
             from playwright.sync_api import sync_playwright
 
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=self.headless)
+            self._browser = self._playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--no-sandbox",
+                    "--single-process",
+                    "--disable-background-networking",
+                    "--disable-default-apps",
+                    "--disable-sync",
+                    "--disable-translate",
+                    "--mute-audio",
+                    "--no-first-run",
+                    "--js-flags=--max-old-space-size=128",
+                ],
+            )
             self._context = self._browser.new_context(
                 user_agent="oldp-ingestor/0.1.2 (+https://github.com/openlegaldata)"
             )

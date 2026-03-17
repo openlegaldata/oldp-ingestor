@@ -3710,7 +3710,7 @@ def test_juris_date_filter_to(monkeypatch):
 
 
 def test_juris_date_filter_range(monkeypatch):
-    """Juris provider includes cases within date range."""
+    """Juris provider uses extended search form when dates are set."""
     from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
     search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
@@ -3725,16 +3725,24 @@ def test_juris_date_filter_range(monkeypatch):
     <div class="docLayoutText"><p>This is the decision content.</p></div>
     </body></html>"""
 
+    submit_called = [False]
+
+    def mock_submit_search_with_dates(self):
+        submit_called[0] = True
+        return search_result_html
+
     page_call_count = [0]
 
     def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
         page_call_count[0] += 1
         if "Suchportlet" in url:
-            if page_call_count[0] <= 1:
-                return search_result_html
+            # Page 2+ returns empty (only 1 result from date search)
             return "<html><body>empty</body></html>"
         return detail_html
 
+    monkeypatch.setattr(
+        BbBeCaseProvider, "_submit_search_with_dates", mock_submit_search_with_dates
+    )
     monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
     monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
 
@@ -3742,6 +3750,7 @@ def test_juris_date_filter_range(monkeypatch):
         date_from="2025-01-01", date_to="2025-12-31", limit=10, request_delay=0
     )
     cases = provider.get_cases()
+    assert submit_called[0], "Expected _submit_search_with_dates to be called"
     assert len(cases) == 1
 
 
