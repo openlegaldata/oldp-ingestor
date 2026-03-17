@@ -393,6 +393,8 @@ def _make_case_provider(args) -> CaseProvider:
 
         return RiiCaseProvider(
             court=args.court,
+            date_from=args.date_from,
+            date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
         )
