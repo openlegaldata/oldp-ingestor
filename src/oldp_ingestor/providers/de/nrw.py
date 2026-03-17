@@ -50,14 +50,30 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
     ):
         super().__init__(base_url=NRW_BASE_URL, request_delay=request_delay)
         self.court_type = court_type or ""
-        # NRW search form date filter is unreliable — use client-side filtering
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit
 
+    @staticmethod
+    def _to_german_date(iso_date: str) -> str:
+        """Convert YYYY-MM-DD to DD.MM.YYYY for NRW search form."""
+        if "." in iso_date:
+            return iso_date  # already German format
+        parts = iso_date.split("-")
+        if len(parts) == 3:
+            return f"{parts[2]}.{parts[1]}.{parts[0]}"
+        return iso_date
+
     def _search_page(self, page: int) -> list[str]:
-        """POST search form and extract case paths from results."""
+        """POST search form and extract case paths from results.
+
+        Uses the extended search (advanced_search=true) with date fields
+        when date_from/date_to are set. The #von and #bis form fields
+        accept DD.MM.YYYY format.
+        """
         page_str = str(page)
+        use_advanced = bool(self.date_from or self.date_to)
+
         data = {
             "gerichtstyp": self.court_type,
             "von2": "",
@@ -65,11 +81,11 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
             "absenden": "Suchen",
             "schlagwoerter": "",
             "method": "stem",
-            "von": "",
+            "von": self._to_german_date(self.date_from) if self.date_from else "",
             "aktenzeichen": "",
-            "bis": "",
+            "bis": self._to_german_date(self.date_to) if self.date_to else "",
             "bis2": "",
-            "advanced_search": "false",
+            "advanced_search": "true" if use_advanced else "false",
             "sortieren_nach": "datum_absteigend",
             "date": "",
             "qSize": NRW_PER_PAGE,
