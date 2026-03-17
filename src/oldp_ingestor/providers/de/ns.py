@@ -27,9 +27,12 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
     Uses GET-based search with query parameters. The site is a Drupal 11
     SSR application (no JavaScript rendering needed).
 
+    Supports server-side date filtering via `date` and `end_date_range`
+    GET parameters (YYYY-MM-DD format).
+
     Args:
-        date_from: Optional start date filter (YYYY-MM-DD, applied client-side).
-        date_to: Optional end date filter (YYYY-MM-DD, applied client-side).
+        date_from: Optional start date filter (YYYY-MM-DD).
+        date_to: Optional end date filter (YYYY-MM-DD).
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -55,12 +58,18 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
         """GET search page and extract document UUIDs from results.
 
         Returns list of document paths like '/browse/document/<uuid>'.
+        Passes date/end_date_range params for server-side date filtering.
         """
         params = {
             "query": "*",
             "publicationtype": "publicationform-ats-filter!ATS_Rechtsprechung",
+            "sort_order": "date_asc",
             "page": str(page),
         }
+        if self.date_from:
+            params["date"] = self.date_from
+        if self.date_to:
+            params["end_date_range"] = self.date_to
 
         resp = self._get(NS_SEARCH_PATH, params=params)
 
