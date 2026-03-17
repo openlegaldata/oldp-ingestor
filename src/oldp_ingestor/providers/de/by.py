@@ -56,7 +56,13 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
     Uses session-based navigation with cookie state. Pages through
     search results, downloads ZIP/XML for each case.
 
+    Supports server-side date filtering via the search form's
+    SearchFields.DatumVon/DatumBis fields (DD.MM.YYYY format).
+    Requires a __RequestVerificationToken (ASP.NET anti-forgery).
+
     Args:
+        date_from: Optional start date (YYYY-MM-DD).
+        date_to: Optional end date (YYYY-MM-DD).
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -65,15 +71,64 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
 
     def __init__(
         self,
+        date_from: str | None = None,
+        date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
     ):
         super().__init__(base_url=BY_BASE_URL, request_delay=request_delay)
+        self.date_from = date_from or ""
+        self.date_to = date_to or ""
         self.limit = limit
 
+    @staticmethod
+    def _to_german_date(iso_date: str) -> str:
+        """Convert YYYY-MM-DD to DD.MM.YYYY."""
+        parts = iso_date.split("-")
+        if len(parts) == 3:
+            return f"{parts[2]}.{parts[1]}.{parts[0]}"
+        return iso_date
+
     def _init_search_session(self) -> None:
-        """Initialize session with search filter for court decisions."""
+        """Initialize session and submit search with optional date filter.
+
+        Sets the DOKTYP=rspr filter, then if dates are set, fetches the
+        search form to extract the CSRF token and POSTs with date fields.
+        """
         self._get("/Search/Filter/DOKTYP/rspr")
+
+        if not self.date_from and not self.date_to:
+            return
+
+        # Fetch search form to get CSRF token
+        import lxml.html
+
+        resp = self._get("/Search/Hitlist")
+        tree = lxml.html.fromstring(resp.text)
+        tokens = tree.xpath('//input[@name="__RequestVerificationToken"]/@value')
+        token = tokens[0] if tokens else ""
+
+        # Submit search with date fields
+        logger.info(
+            "Submitting BY search with dates: %s to %s",
+            self.date_from,
+            self.date_to,
+        )
+        self._post(
+            "/Search",
+            data={
+                "SearchFields.Content": "",
+                "SearchFields.DatumVon": (
+                    self._to_german_date(self.date_from) if self.date_from else ""
+                ),
+                "SearchFields.DatumBis": (
+                    self._to_german_date(self.date_to) if self.date_to else ""
+                ),
+                "SearchFields.Aktenzeichen": "",
+                "SearchFields.Norm": "",
+                "__RequestVerificationToken": token,
+            },
+        )
 
     def _get_ids_from_page(self, page: int) -> list[str]:
         """Fetch page and extract document IDs via regex."""

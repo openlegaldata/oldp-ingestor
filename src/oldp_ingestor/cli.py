@@ -401,6 +401,8 @@ def _make_case_provider(args) -> CaseProvider:
         from oldp_ingestor.providers.de.by import ByCaseProvider
 
         return ByCaseProvider(
+            date_from=args.date_from,
+            date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
         )
