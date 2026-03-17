@@ -58,6 +58,28 @@ def _write_result_and_return(
     return 1 if errors > 0 else 0
 
 
+def _save_failed_cases(results_dir, provider, failed_cases):
+    """Save failed cases to a JSON file for later replay."""
+    os.makedirs(results_dir, exist_ok=True)
+    path = os.path.join(results_dir, f"failed_{provider}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(failed_cases, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    logger.info(
+        "Saved %d failed case(s) to %s — fix courts/aliases then replay with: "
+        "oldp-ingestor replay --input %s",
+        len(failed_cases),
+        path,
+        path,
+    )
+
+
+def _load_failed_cases(path):
+    """Load failed cases from a JSON file."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def cmd_info(args):
     client = OLDPClient.from_settings()
     data = client.get("/api/?format=json")
@@ -260,6 +282,7 @@ def cmd_cases(args):
         cases_created = 0
         cases_skipped = 0
         cases_invalid = 0
+        failed_cases: list[dict] = []
 
         for case in cases:
             case_label = case.get("file_number", "?")
@@ -307,6 +330,11 @@ def cmd_cases(args):
                         except (ValueError, AttributeError):
                             detail = f" - {e.response.text[:200]}"
                     logger.error("Error creating case %s: %s%s", case_label, e, detail)
+                    failed_cases.append({"case": case, "error": str(e) + detail})
+
+        # Save failed cases to file for later replay
+        if failed_cases and args.results_dir:
+            _save_failed_cases(args.results_dir, args.provider, failed_cases)
 
         logger.info(
             "Summary: cases created=%d skipped=%d invalid=%d errors=%d",
@@ -343,6 +371,88 @@ def cmd_cases(args):
             errors=1,
             status="error",
         )
+
+
+def cmd_replay(args):
+    """Replay failed cases from a saved JSON file.
+
+    After fixing court aliases or other issues, re-submit previously
+    failed cases without re-scraping the source websites.
+    """
+    started_at = datetime.now(timezone.utc)
+    status = "ok"
+
+    try:
+        sink = _make_sink(args)
+        failed_entries = _load_failed_cases(args.input)
+        logger.info("Loaded %d failed case(s) from %s", len(failed_entries), args.input)
+
+        created = 0
+        skipped = 0
+        errors = 0
+        still_failed: list[dict] = []
+
+        for entry in failed_entries:
+            case = entry["case"]
+            case_label = case.get("file_number", "?")
+            try:
+                sink.write_case(case)
+                created += 1
+                logger.info("Replayed case: %s", case_label)
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 409:
+                    skipped += 1
+                    logger.debug("Skipped (already exists): %s", case_label)
+                else:
+                    errors += 1
+                    detail = ""
+                    if e.response is not None:
+                        try:
+                            detail = f" - {e.response.json()}"
+                        except (ValueError, AttributeError):
+                            detail = f" - {e.response.text[:200]}"
+                    logger.error("Still failing: %s: %s%s", case_label, e, detail)
+                    still_failed.append({"case": case, "error": str(e) + detail})
+
+        # Overwrite the failed file with remaining failures (or delete if empty)
+        if still_failed:
+            with open(args.input, "w", encoding="utf-8") as f:
+                json.dump(still_failed, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            logger.info(
+                "%d case(s) still failing — saved to %s", len(still_failed), args.input
+            )
+        else:
+            os.remove(args.input)
+            logger.info("All cases replayed successfully — removed %s", args.input)
+
+        logger.info(
+            "Replay summary: created=%d skipped=%d errors=%d", created, skipped, errors
+        )
+
+        if errors > 0:
+            status = "partial"
+
+        results_dir = getattr(args, "results_dir", None)
+        if results_dir:
+            finished_at = datetime.now(timezone.utc)
+            write_result(
+                results_dir,
+                "replay",
+                os.path.basename(args.input),
+                started_at,
+                finished_at,
+                created=created,
+                skipped=skipped,
+                errors=errors,
+                status=status,
+            )
+
+        return 1 if errors > 0 else 0
+
+    except Exception:
+        logger.exception("Fatal error in replay command")
+        return 2
 
 
 _JURIS_PROVIDERS = {
@@ -738,6 +848,22 @@ def main():
         help="Output format (default: table)",
     )
 
+    replay_parser = subparsers.add_parser(
+        "replay",
+        help="Replay failed cases from a saved JSON file (no re-scraping)",
+    )
+    replay_parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to failed_*.json file from a previous run",
+    )
+    replay_parser.add_argument(
+        "--write-delay",
+        type=float,
+        default=0.0,
+        help="Delay in seconds between OLDP API write requests (default: 0.0)",
+    )
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -754,6 +880,7 @@ def main():
         "info": cmd_info,
         "laws": cmd_laws,
         "cases": cmd_cases,
+        "replay": cmd_replay,
         "status": cmd_status,
         "analyze-courts": cmd_analyze_courts,
     }

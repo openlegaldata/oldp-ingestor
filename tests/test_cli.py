@@ -1345,6 +1345,87 @@ def test_cli_laws_help_includes_write_delay():
     assert "--write-delay" in result.stdout
 
 
+def test_cli_replay_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "oldp_ingestor.cli", "replay", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "--input" in result.stdout
+
+
+def test_save_and_load_failed_cases():
+    from oldp_ingestor.cli import _load_failed_cases, _save_failed_cases
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        failed = [
+            {
+                "case": {"court_name": "Test Court", "file_number": "1 O 1/25"},
+                "error": "court_not_found",
+            }
+        ]
+        _save_failed_cases(tmpdir, "test-provider", failed)
+
+        path = os.path.join(tmpdir, "failed_test-provider.json")
+        assert os.path.exists(path)
+
+        loaded = _load_failed_cases(path)
+        assert len(loaded) == 1
+        assert loaded[0]["case"]["file_number"] == "1 O 1/25"
+        assert loaded[0]["error"] == "court_not_found"
+
+
+def test_cmd_replay_success(monkeypatch):
+    """Replay command creates cases from saved failures."""
+    monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")
+    monkeypatch.setenv("OLDP_API_TOKEN", "test-token")
+
+    import importlib
+
+    import oldp_ingestor.settings
+
+    importlib.reload(oldp_ingestor.settings)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Write a failed cases file
+        failed_path = os.path.join(tmpdir, "failed_test.json")
+        with open(failed_path, "w") as f:
+            json.dump(
+                [
+                    {
+                        "case": {
+                            "court_name": "Amtsgericht Berlin",
+                            "file_number": "1 C 1/25",
+                            "date": "2025-01-15",
+                            "content": "x" * 200,
+                        },
+                        "error": "court_not_found",
+                    }
+                ],
+                f,
+            )
+
+        from oldp_ingestor.cli import cmd_replay
+
+        class FakeArgs:
+            input = failed_path
+            sink = "api"
+            write_delay = 0.0
+            results_dir = tmpdir
+
+        # Mock the sink to succeed
+        monkeypatch.setattr(
+            "oldp_ingestor.cli._make_sink",
+            lambda args: type("FakeSink", (), {"write_case": lambda self, c: None})(),
+        )
+
+        exit_code = cmd_replay(FakeArgs())
+        assert exit_code == 0
+        # Failed file should be removed on success
+        assert not os.path.exists(failed_path)
+
+
 def test_write_delay_flag_passed(monkeypatch):
     """--write-delay value is passed through to OLDPClient."""
     monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")

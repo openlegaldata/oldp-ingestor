@@ -100,8 +100,14 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         resp = self._post("/searchlist.phtml", data=data)
         text = resp.text
 
-        # Extract IDs from popupDocument('ID') calls
-        ids = re.findall(r"popupDocument\('(\d+)'\)", text)
+        # Extract IDs from popupDocument('ID') calls — deduplicate preserving order
+        seen: set[str] = set()
+        ids: list[str] = []
+        for m in re.finditer(r"popupDocument\('(\d+)'\)", text):
+            doc_id = m.group(1)
+            if doc_id not in seen:
+                seen.add(doc_id)
+                ids.append(doc_id)
         return ids
 
     def _fetch_document(self, doc_id: str) -> dict | None:
@@ -208,9 +214,6 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
             return cases
 
         logger.info("Found %d document(s)", len(doc_ids))
-
-        if self.limit and len(doc_ids) > self.limit:
-            doc_ids = doc_ids[: self.limit]
 
         for doc_id in doc_ids:
             try:
