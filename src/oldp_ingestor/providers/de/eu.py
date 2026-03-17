@@ -1,15 +1,15 @@
 """Provider for EUR-Lex (European Court of Justice case law).
 
 Fetches case law from EUR-Lex using the CELLAR SPARQL endpoint for ECLI search
-and EUR-Lex HTML/XML detail pages for metadata and content.
+and the EUR-Lex HTML endpoint for full-text content.
 
-Three-step pipeline:
-1. SPARQL query to CELLAR for ECLI identifiers (paginated)
-2. XML detail page per ECLI -> metadata (date, title, file_number, type)
-3. HTML full text per ECLI -> content
+Two-step pipeline:
+1. SPARQL query to CELLAR for ECLI identifiers + metadata (paginated)
+2. HTML full text from EUR-Lex per CELEX number -> content
 
-The SPARQL endpoint (publications.europa.eu) is public and requires no
-authentication, unlike the legacy SOAP web service.
+Content is fetched from EUR-Lex (eur-lex.europa.eu/legal-content/) as the
+primary source, with CELLAR (publications.europa.eu/resource/celex/) as
+fallback. The SPARQL endpoint is public and requires no authentication.
 """
 
 import logging
@@ -61,6 +61,13 @@ _CELEX_TYPE_NAMES = {
     "FB": "Mitteilung Beschluss",
 }
 
+# ECLI court code -> German court name
+_ECLI_COURT_NAMES = {
+    "C": "Europäischer Gerichtshof",
+    "T": "Gericht der Europäischen Union",
+    "F": "Gericht für den öffentlichen Dienst der Europäischen Union",
+}
+
 # Unicode non-breaking hyphen (U+2011) used in EUR-Lex file numbers
 _UNICODE_DASH = chr(8209)
 
@@ -68,16 +75,14 @@ _UNICODE_DASH = chr(8209)
 class EuCaseProvider(ScraperBaseClient, CaseProvider):
     """Fetches case law from EUR-Lex (European Court of Justice).
 
-    Uses the CELLAR SPARQL endpoint for ECLI search and EUR-Lex HTML/XML
-    endpoints for case details and content.
+    Uses the CELLAR SPARQL endpoint for ECLI search and EUR-Lex HTML
+    endpoint for full-text content (with CELLAR as fallback).
 
     Supports server-side date filtering via SPARQL ``FILTER`` clauses on
     the ``?date`` variable. When date_from/date_to are set, the SPARQL
     query includes ``FILTER(?date >= "..."^^xsd:date)`` /
     ``FILTER(?date <= "..."^^xsd:date)`` so only matching ECLIs are
-    returned from the CELLAR endpoint. Content is fetched from the CELLAR
-    API (publications.europa.eu/resource/celex/) since eur-lex.europa.eu
-    has an AWS WAF that blocks non-browser requests.
+    returned from the CELLAR endpoint.
 
     Args:
         username: EUR-Lex web service username (unused, kept for CLI compat).
@@ -186,45 +191,89 @@ OFFSET {offset}"""
         if self.limit and len(results) > self.limit:
             results = results[: self.limit]
 
+        # Deduplicate by ECLI — SPARQL can return duplicate ECLIs with
+        # _RES suffix CELEX variants (e.g. 62024CJ0008 and 62024CJ0008_RES).
+        # Prefer the CELEX without _RES suffix.
+        seen_eclis: dict[str, dict] = {}
+        for item in results:
+            ecli = item["ecli"]
+            if ecli not in seen_eclis:
+                seen_eclis[ecli] = item
+            elif "_RES" in seen_eclis[ecli].get("celex", "") and "_RES" not in item.get(
+                "celex", ""
+            ):
+                seen_eclis[ecli] = item
+        if len(seen_eclis) < len(results):
+            logger.info("Deduplicated %d -> %d ECLIs", len(results), len(seen_eclis))
+        results = list(seen_eclis.values())
+
         return results
 
-    def _fetch_case_content(self, celex: str) -> str | None:
-        """Fetch HTML full text from CELLAR via CELEX number.
+    def _try_fetch_html(self, url: str, celex: str) -> str | None:
+        """Try to fetch and parse HTML content from a URL.
 
-        Uses publications.europa.eu (CELLAR) which doesn't have WAF,
-        unlike eur-lex.europa.eu which blocks non-browser requests.
-
-        Returns HTML body string or None on failure.
+        Returns extracted body HTML, or None on failure (HTTP error, WAF
+        block, short content, parse error).
         """
-        html_url = f"{CELLAR_BASE_URL}/resource/celex/{celex}"
-
         try:
             resp = self._get(
-                html_url, headers={"Accept": "text/html", "Accept-Language": "de"}
+                url, headers={"Accept": "text/html", "Accept-Language": "de"}
             )
         except Exception as exc:
-            logger.warning("Failed to fetch HTML for CELEX %s: %s", celex, exc)
+            logger.warning(
+                "Failed to fetch HTML for CELEX %s from %s: %s", celex, url, exc
+            )
             return None
 
         if resp.status_code != 200 or len(resp.text) < EURLEX_MIN_CONTENT_LEN:
             logger.warning(
-                "Empty/missing content for CELEX %s (status %d)",
+                "Empty/missing content for CELEX %s (status %d, url %s)",
                 celex,
                 resp.status_code,
+                url,
             )
             return None
 
+        # Detect AWS WAF challenge page (returns 200 but with JS challenge)
+        if "aws-waf-token" in resp.text:
+            logger.warning("WAF challenge detected for CELEX %s at %s", celex, url)
+            return None
+
         try:
-            return _extract_html_content(resp.text, html_url)
+            return _extract_html_content(resp.text, url)
         except Exception as exc:
             logger.warning("Failed to parse HTML for CELEX %s: %s", celex, exc)
             return None
 
+    def _fetch_case_content(self, celex: str) -> str | None:
+        """Fetch HTML full text for a CELEX number.
+
+        Tries EUR-Lex first (primary source), falls back to CELLAR if
+        EUR-Lex fails (e.g. WAF returns). Strips ``_RES`` suffix from
+        CELEX before constructing URLs (these variants always 404).
+
+        Returns HTML body string or None on failure.
+        """
+        # Strip _RES suffix (always 404s on both EUR-Lex and CELLAR)
+        base_celex = re.sub(r"_RES$", "", celex)
+
+        # Try EUR-Lex first (primary source)
+        eurlex_url = (
+            f"{EURLEX_BASE_URL}/legal-content/DE/TXT/HTML/?uri=CELEX:{base_celex}"
+        )
+        content = self._try_fetch_html(eurlex_url, base_celex)
+        if content is not None:
+            return content
+
+        # Fallback to CELLAR if EUR-Lex fails
+        cellar_url = f"{CELLAR_BASE_URL}/resource/celex/{base_celex}"
+        return self._try_fetch_html(cellar_url, base_celex)
+
     def get_cases(self) -> list[dict]:
-        """Fetch cases from EUR-Lex: SPARQL search -> CELLAR HTML content.
+        """Fetch cases from EUR-Lex: SPARQL search -> EUR-Lex HTML content.
 
         Metadata (date, file_number, type) is extracted from SPARQL + CELEX.
-        Content HTML is fetched from CELLAR via CELEX number.
+        Content HTML is fetched from EUR-Lex (fallback: CELLAR) via CELEX.
         """
         cases: list[dict] = []
 
@@ -253,9 +302,10 @@ OFFSET {offset}"""
             # Extract file number from ECLI or title
             file_number = _extract_file_number_from_ecli(ecli)
             case_type = _get_case_type_from_celex(celex)
+            court_name = _get_court_name_from_ecli(ecli)
 
             case: dict = {
-                "court_name": "Europäischer Gerichtshof",
+                "court_name": court_name,
                 "file_number": file_number,
                 "date": date,
                 "content": content,
@@ -371,6 +421,23 @@ def _extract_file_number_from_ecli(ecli: str) -> str:
     return ecli
 
 
+def _get_court_name_from_ecli(ecli: str) -> str:
+    """Map ECLI court code to German court name.
+
+    ECLI format: ECLI:EU:{court}:{year}:{number}
+    Court codes: C (EuGH), T (EuG), F (EuGöD).
+    Falls back to 'Europäischer Gerichtshof' for unknown codes.
+    """
+    parts = ecli.split(":")
+    if len(parts) >= 3:
+        court_code = parts[2]
+        name = _ECLI_COURT_NAMES.get(court_code)
+        if name:
+            return name
+        logger.debug("Unknown ECLI court code: %s", court_code)
+    return _ECLI_COURT_NAMES["C"]
+
+
 def _get_case_type_from_celex(celex: str) -> str:
     """Map CELEX number to German case type name.
 
@@ -410,6 +477,16 @@ def _extract_html_content(html_text: str, source_url: str) -> str | None:
                 link.attrib["href"] = urljoin(source_url, href)
             else:
                 del link.attrib["href"]
+
+        # Strip JS event handler attributes (EUR-Lex uses onclick on footnotes)
+        for el in body.xpath(".//*[@onclick or @onerror or @onload]"):
+            for attr in ("onclick", "onerror", "onload"):
+                if attr in el.attrib:
+                    del el.attrib[attr]
+
+        # Remove <script> elements
+        for script in body.xpath(".//script"):
+            script.getparent().remove(script)
 
         # Serialize body children as HTML
         return "".join(

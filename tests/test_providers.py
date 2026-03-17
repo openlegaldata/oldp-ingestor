@@ -3921,6 +3921,27 @@ def test_eu_get_case_type_from_celex():
     assert _get_case_type_from_celex("invalid") == ""
 
 
+def test_eu_get_court_name_from_ecli():
+    from oldp_ingestor.providers.de.eu import _get_court_name_from_ecli
+
+    # C = EuGH (Court of Justice)
+    assert _get_court_name_from_ecli("ECLI:EU:C:2024:100") == "Europäischer Gerichtshof"
+    # T = EuG (General Court)
+    assert (
+        _get_court_name_from_ecli("ECLI:EU:T:2024:50")
+        == "Gericht der Europäischen Union"
+    )
+    # F = EuGöD (Civil Service Tribunal)
+    assert (
+        _get_court_name_from_ecli("ECLI:EU:F:2015:10")
+        == "Gericht für den öffentlichen Dienst der Europäischen Union"
+    )
+    # Unknown court code falls back to EuGH
+    assert _get_court_name_from_ecli("ECLI:EU:X:2024:1") == "Europäischer Gerichtshof"
+    # Invalid ECLI falls back to EuGH
+    assert _get_court_name_from_ecli("invalid") == "Europäischer Gerichtshof"
+
+
 def test_eu_parse_eclis_from_sparql():
     from oldp_ingestor.providers.de.eu import _parse_eclis_from_sparql
 
@@ -4088,6 +4109,27 @@ def test_eu_fetch_case_content():
     assert "javascript" not in content
 
 
+def test_eu_fetch_case_content_strips_event_handlers():
+    """onclick and other JS event handlers should be stripped from content."""
+    from oldp_ingestor.providers.de.eu import _extract_html_content
+
+    html = """<html><body>
+        <p>Decision text</p>
+        <a href="#fn1" onclick="toggle(1)">1</a>
+        <img onerror="alert(1)" src="x.png"/>
+        <div onload="init()">content</div>
+        <script>var x = 1;</script>
+    </body></html>"""
+
+    content = _extract_html_content(html, "https://test.com")
+    assert content is not None
+    assert "Decision text" in content
+    assert "onclick" not in content
+    assert "onerror" not in content
+    assert "onload" not in content
+    assert "<script" not in content
+
+
 def test_eu_fetch_case_content_no_body():
     """HTML without body should return None."""
     from oldp_ingestor.providers.de.eu import _extract_html_content
@@ -4124,9 +4166,9 @@ def test_eu_build_sparql_query():
 def test_eu_get_cases_with_mock(monkeypatch):
     """Full EU integration test with monkeypatched HTTP.
 
-    The EU provider now uses:
+    The EU provider uses:
     1. SPARQL for ECLI + CELEX + date
-    2. CELLAR (/resource/celex/) for HTML content
+    2. EUR-Lex HTML endpoint for content (fallback: CELLAR)
     Metadata (file_number, type) is derived from ECLI/CELEX, not XML.
     """
     import json
@@ -4170,7 +4212,7 @@ def test_eu_get_cases_with_mock(monkeypatch):
         if "sparql" in url:
             resp.text = sparql_response
             resp.content = sparql_response.encode("utf-8")
-        elif "resource/celex" in url:
+        elif "legal-content" in url:
             resp.text = html_content
             resp.content = html_content.encode("utf-8")
         return resp
@@ -4188,6 +4230,64 @@ def test_eu_get_cases_with_mock(monkeypatch):
     assert case["ecli"] == "ECLI:EU:C:2024:100"
     assert case["type"] == "Urteil"
     assert "Full decision text" in case["content"]
+
+
+def test_eu_get_cases_court_name_from_ecli(monkeypatch):
+    """T-series ECLI should map to EuG, not EuGH."""
+    import json
+
+    from oldp_ingestor.providers.de.eu import EuCaseProvider
+
+    sparql_response = json.dumps(
+        {
+            "results": {
+                "bindings": [
+                    {
+                        "ecli": {"value": "ECLI:EU:T:2024:50"},
+                        "date": {"value": "2024-04-10"},
+                        "celex": {"value": "62024TJ0050"},
+                    },
+                ]
+            }
+        }
+    )
+
+    html_content = (
+        "<html><body><p>URTEIL DES GERICHTS (Erste Kammer) "
+        "10. April 2024 in der Rechtssache T-50/24. "
+        "Full decision text with enough content.</p></body></html>"
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        content = b""
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.text)
+
+    def mock_request(self, method, url, **kwargs):
+        resp = FakeResp()
+        if "sparql" in url:
+            resp.text = sparql_response
+            resp.content = sparql_response.encode("utf-8")
+        elif "legal-content" in url:
+            resp.text = html_content
+            resp.content = html_content.encode("utf-8")
+        return resp
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(limit=2, request_delay=0)
+    cases = provider.get_cases()
+
+    assert len(cases) == 1
+    assert cases[0]["court_name"] == "Gericht der Europäischen Union"
+    assert cases[0]["file_number"] == "T-50/24"
+    assert cases[0]["type"] == "Urteil"
 
 
 def test_eu_get_cases_skips_on_detail_failure(monkeypatch):
@@ -4251,23 +4351,14 @@ def test_eu_get_cases_skips_short_content(monkeypatch):
                     {
                         "ecli": {"value": "ECLI:EU:C:2024:888"},
                         "date": {"value": "2024-01-01"},
+                        "celex": {"value": "62024CJ0888"},
                     }
                 ]
             }
         }
     )
 
-    xml_detail = b"""<?xml version="1.0" encoding="UTF-8"?>
-    <root>
-      <WORK_DATE_DOCUMENT><VALUE>2024-01-01</VALUE></WORK_DATE_DOCUMENT>
-      <RESOURCE_LEGAL_ID_CELEX><VALUE>62024CJ0888</VALUE></RESOURCE_LEGAL_ID_CELEX>
-      <EXPRESSION>
-        <EXPRESSION_USES_LANGUAGE><IDENTIFIER>DEU</IDENTIFIER></EXPRESSION_USES_LANGUAGE>
-        <EXPRESSION_TITLE><VALUE>Title C-888/24</VALUE></EXPRESSION_TITLE>
-      </EXPRESSION>
-    </root>"""
-
-    # Very short HTML body
+    # Very short HTML body — content will be too short after extraction
     html_content = """<html><body><p>X</p></body></html>"""
 
     class FakeResp:
@@ -4286,10 +4377,7 @@ def test_eu_get_cases_skips_short_content(monkeypatch):
         if "sparql" in url:
             resp.text = sparql_response
             resp.content = sparql_response.encode("utf-8")
-        elif "XML" in url:
-            resp.text = xml_detail.decode("utf-8")
-            resp.content = xml_detail
-        elif "HTML" in url:
+        elif "legal-content" in url or "resource/celex" in url:
             resp.text = html_content
             resp.content = html_content.encode("utf-8")
         return resp
@@ -4317,6 +4405,195 @@ def test_eu_multiple_file_numbers_from_title():
 
     details = _parse_case_details_from_xml(xml, "ECLI:EU:C:2024:1")
     assert details["file_number"] == "C-1/24,C-2/24"
+
+
+def test_eu_celex_res_suffix_stripped(monkeypatch):
+    """CELEX _RES suffix should be stripped before constructing content URL."""
+    import json
+
+    from oldp_ingestor.providers.de.eu import EuCaseProvider
+
+    sparql_response = json.dumps(
+        {
+            "results": {
+                "bindings": [
+                    {
+                        "ecli": {"value": "ECLI:EU:C:2024:50"},
+                        "date": {"value": "2024-03-01"},
+                        "celex": {"value": "62024CJ0050_RES"},
+                    }
+                ]
+            }
+        }
+    )
+
+    html_content = (
+        "<html><body><p>URTEIL DES GERICHTSHOFS 01. März 2024 "
+        "in der Rechtssache C-50/24. Full text content here.</p></body></html>"
+    )
+
+    requested_urls = []
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        content = b""
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.text)
+
+    def mock_request(self, method, url, **kwargs):
+        requested_urls.append(url)
+        resp = FakeResp()
+        if "sparql" in url:
+            resp.text = sparql_response
+            resp.content = sparql_response.encode("utf-8")
+        elif "legal-content" in url:
+            resp.text = html_content
+            resp.content = html_content.encode("utf-8")
+        return resp
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(limit=1, request_delay=0)
+    cases = provider.get_cases()
+
+    assert len(cases) == 1
+    # Verify _RES was stripped from the URL
+    content_urls = [u for u in requested_urls if "legal-content" in u]
+    assert len(content_urls) == 1
+    assert "_RES" not in content_urls[0]
+    assert "62024CJ0050" in content_urls[0]
+
+
+def test_eu_eurlex_waf_falls_back_to_cellar(monkeypatch):
+    """When EUR-Lex returns a WAF challenge, should fall back to CELLAR."""
+    import json
+
+    from oldp_ingestor.providers.de.eu import EuCaseProvider
+
+    sparql_response = json.dumps(
+        {
+            "results": {
+                "bindings": [
+                    {
+                        "ecli": {"value": "ECLI:EU:C:2024:200"},
+                        "date": {"value": "2024-06-01"},
+                        "celex": {"value": "62024CJ0200"},
+                    }
+                ]
+            }
+        }
+    )
+
+    waf_page = (
+        '<html><head><script>var aws-waf-token="abc123";</script></head>'
+        "<body>Please wait...</body></html>"
+    )
+    real_content = (
+        "<html><body><p>URTEIL DES GERICHTSHOFS 01. Juni 2024 "
+        "in der Rechtssache C-200/24. Full text via CELLAR.</p></body></html>"
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        content = b""
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.text)
+
+    def mock_request(self, method, url, **kwargs):
+        resp = FakeResp()
+        if "sparql" in url:
+            resp.text = sparql_response
+            resp.content = sparql_response.encode("utf-8")
+        elif "legal-content" in url:
+            # EUR-Lex returns WAF challenge
+            resp.text = waf_page
+            resp.content = waf_page.encode("utf-8")
+        elif "resource/celex" in url:
+            # CELLAR returns real content
+            resp.text = real_content
+            resp.content = real_content.encode("utf-8")
+        return resp
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(limit=1, request_delay=0)
+    cases = provider.get_cases()
+
+    assert len(cases) == 1
+    assert "Full text via CELLAR" in cases[0]["content"]
+
+
+def test_eu_search_eclis_deduplicates_by_ecli(monkeypatch):
+    """SPARQL results with duplicate ECLIs (_RES variants) should be deduped."""
+    import json
+
+    from oldp_ingestor.providers.de.eu import EuCaseProvider
+
+    sparql_response = json.dumps(
+        {
+            "results": {
+                "bindings": [
+                    {
+                        "ecli": {"value": "ECLI:EU:C:2024:8"},
+                        "date": {"value": "2024-01-15"},
+                        "celex": {"value": "62024CJ0008"},
+                    },
+                    {
+                        "ecli": {"value": "ECLI:EU:C:2024:8"},
+                        "date": {"value": "2024-01-15"},
+                        "celex": {"value": "62024CJ0008_RES"},
+                    },
+                    {
+                        "ecli": {"value": "ECLI:EU:C:2024:9"},
+                        "date": {"value": "2024-01-16"},
+                        "celex": {"value": "62024CJ0009"},
+                    },
+                ]
+            }
+        }
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        content = b""
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.text)
+
+    def mock_request(self, method, url, **kwargs):
+        resp = FakeResp()
+        if "sparql" in url:
+            resp.text = sparql_response
+            resp.content = sparql_response.encode("utf-8")
+        return resp
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(request_delay=0)
+    results = provider._search_eclis()
+
+    assert len(results) == 2
+    eclis = [r["ecli"] for r in results]
+    assert "ECLI:EU:C:2024:8" in eclis
+    assert "ECLI:EU:C:2024:9" in eclis
+    # Should prefer non-_RES variant
+    for r in results:
+        if r["ecli"] == "ECLI:EU:C:2024:8":
+            assert r["celex"] == "62024CJ0008"
 
 
 # ===================================================================

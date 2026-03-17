@@ -12,14 +12,15 @@ are not used by the current implementation.
 
 ## Data Pipeline
 
-The provider uses a three-step pipeline:
+The provider uses a two-step pipeline:
 
 1. **SPARQL search** — GET to `https://publications.europa.eu/webapi/rdf/sparql`
-   with a SPARQL query. Returns paginated ECLI identifiers with dates.
-2. **XML detail** — GET `https://eur-lex.europa.eu/legal-content/DE/TXT/XML/?uri=ECLI:{ecli}`
-   to extract metadata (date, title, file number, case type).
-3. **HTML content** — GET `https://eur-lex.europa.eu/legal-content/DE/TXT/HTML/?uri=ECLI:{ecli}`
-   to extract the full decision text.
+   with a SPARQL query. Returns paginated ECLI identifiers with dates and CELEX numbers.
+   Results are deduplicated by ECLI (SPARQL can return `_RES` suffix CELEX variants).
+2. **HTML content** — GET `https://eur-lex.europa.eu/legal-content/DE/TXT/HTML/?uri=CELEX:{celex}`
+   to extract the full decision text. Falls back to CELLAR
+   (`https://publications.europa.eu/resource/celex/{celex}`) if EUR-Lex is unavailable
+   (e.g. WAF blocking). Metadata (date, file_number, type) is derived from SPARQL + CELEX.
 
 ## SPARQL Query
 
@@ -53,7 +54,7 @@ Pagination uses `LIMIT` / `OFFSET` with a page size of 100.
 | Title regex / `SAMEAS` fallback | `file_number` | e.g. `C-42/24` |
 | `RESOURCE_LEGAL_ID_CELEX/VALUE` | `type` | Via CELEX type mapping |
 | HTML `<body>` content | `content` | Links processed |
-| Fixed | `court_name` | Always `Europäischer Gerichtshof` |
+| ECLI court code | `court_name` | C=Europäischer Gerichtshof, T=Gericht der EU, F=EuGöD |
 
 ## CELEX Type Mapping
 
@@ -95,8 +96,9 @@ FILTER(?date <= "2025-12-31"^^xsd:date)
 ```
 
 The CELLAR endpoint returns only ECLIs matching the requested date range.
-Content is fetched from the CELLAR API (`publications.europa.eu/resource/celex/`)
-since `eur-lex.europa.eu` has an AWS WAF that blocks non-browser requests.
+Content is fetched from EUR-Lex (`eur-lex.europa.eu/legal-content/`) as the
+primary source, with CELLAR (`publications.europa.eu/resource/celex/`) as
+fallback in case EUR-Lex deploys WAF blocking again.
 
 ## Known Quirks
 
@@ -109,5 +111,9 @@ since `eur-lex.europa.eu` has an AWS WAF that blocks non-browser requests.
 - **Content threshold**: Cases with `<body>` content shorter than 10 characters are skipped.
 - **XML declarations in HTML**: Some EUR-Lex HTML pages include `<?xml encoding=...?>`
   declarations that break `lxml.html.fromstring()`. The provider strips these before parsing.
-- **404 on recent ECLIs**: Very recent cases may have ECLI entries in CELLAR but no
-  XML/HTML pages on EUR-Lex yet. These are skipped with a warning.
+- **CELEX `_RES` suffix**: SPARQL can return duplicate ECLIs with `_RES` suffix CELEX
+  variants (e.g. `62024CJ0008` and `62024CJ0008_RES`). The `_RES` variant always 404s.
+  The provider deduplicates by ECLI (preferring non-`_RES`) and strips `_RES` before
+  constructing content URLs.
+- **WAF resilience**: If EUR-Lex re-enables its AWS WAF (detected by `aws-waf-token` in
+  response body), the provider automatically falls back to the CELLAR endpoint.
