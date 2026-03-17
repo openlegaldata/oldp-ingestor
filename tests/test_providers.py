@@ -5375,3 +5375,878 @@ def test_extract_text_from_pdf_empty(monkeypatch):
     client = ScraperBaseClient(request_delay=0)
     result = client._extract_text_from_pdf("https://example.com/empty.pdf")
     assert result == ""
+
+
+# ===================================================================
+# --- RiiCaseProvider: date search and dispatch ---
+# ===================================================================
+
+
+def test_rii_iso_to_german_date():
+    """_iso_to_german_date converts YYYY-MM-DD to DD.MM.YYYY."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    assert RiiCaseProvider._iso_to_german_date("2025-03-15") == "15.03.2025"
+    assert RiiCaseProvider._iso_to_german_date("2024-12-01") == "01.12.2024"
+    # Invalid format returned as-is
+    assert RiiCaseProvider._iso_to_german_date("invalid") == "invalid"
+    assert RiiCaseProvider._iso_to_german_date("2025-03") == "2025-03"
+
+
+def test_rii_court_name_map_applied():
+    """_COURT_NAME_MAP should normalize 'BPatG München' to 'Bundespatentgericht'."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <dokument>
+        <doknr>BPATG001</doknr>
+        <gertyp>BPatG</gertyp>
+        <gerort>München</gerort>
+        <entsch-datum>20240601</entsch-datum>
+        <aktenzeichen>10 W 1/24</aktenzeichen>
+        <doktyp>Beschluss</doktyp>
+        <tenor><p>Content text</p></tenor>
+        <accessRights>public</accessRights>
+    </dokument>"""
+
+    provider = RiiCaseProvider(request_delay=0)
+    case = provider._parse_case_from_xml(xml)
+    assert case is not None
+    assert case["court_name"] == "Bundespatentgericht"
+
+
+def test_rii_submit_date_search(monkeypatch):
+    """_submit_date_search navigates through Playwright and returns doc IDs."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    # Track calls for assertions
+    calls = {}
+
+    class FakeLocator:
+        def __init__(self, name=""):
+            self.name = name
+
+        @property
+        def first(self):
+            return self
+
+        def click(self):
+            calls.setdefault("clicks", []).append(self.name)
+
+        def fill(self, val):
+            calls.setdefault("fills", []).append(val)
+
+        def type(self, val):
+            calls.setdefault("types", []).append(val)
+
+    class FakePage:
+        def goto(self, url, timeout=None):
+            calls["goto"] = url
+
+        def wait_for_load_state(self, state, timeout=None):
+            pass
+
+        def locator(self, selector):
+            return FakeLocator(selector)
+
+        def wait_for_selector(self, selector, timeout=None):
+            pass
+
+        def content(self):
+            return '<a href="?doc.id=jb-TEST001&x=1">Link</a><a href="?doc.id=jb-TEST002&x=1">Link2</a>'
+
+        def close(self):
+            calls["page_closed"] = True
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+    def mock_ensure_browser(self):
+        self._context = FakeContext()
+
+    monkeypatch.setattr(RiiCaseProvider, "_ensure_browser", mock_ensure_browser)
+
+    provider = RiiCaseProvider(
+        date_from="2025-01-01", date_to="2025-06-30", request_delay=0
+    )
+    ids = provider._submit_date_search()
+
+    assert sorted(ids) == ["jb-TEST001", "jb-TEST002"]
+    assert provider._date_search_submitted is True
+    assert calls.get("page_closed") is True
+
+
+def test_rii_get_date_search_page(monkeypatch):
+    """_get_date_search_page calls _get_page_html and extracts doc IDs."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
+        assert "currentNavigationPosition=26" in url
+        return '<a href="?doc.id=jb-PAGE2DOC&x=1">Link</a>'
+
+    monkeypatch.setattr(RiiCaseProvider, "_get_page_html", mock_get_page_html)
+
+    provider = RiiCaseProvider(request_delay=0)
+    ids = provider._get_date_search_page(2)
+    assert ids == ["jb-PAGE2DOC"]
+
+
+def test_rii_fetch_and_parse_cases(monkeypatch):
+    """_fetch_and_parse_cases downloads ZIPs, parses XML, appends cases."""
+    import io
+    import zipfile
+
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+    <dokument>
+        <doknr>TESTDOC</doknr>
+        <gertyp>BGH</gertyp>
+        <gerort/>
+        <entsch-datum>20240601</entsch-datum>
+        <aktenzeichen>1 ZR 99/24</aktenzeichen>
+        <doktyp>Urteil</doktyp>
+        <tenor><p>Decision text here</p></tenor>
+        <accessRights>public</accessRights>
+    </dokument>"""
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr("TESTDOC.xml", xml_content)
+    zip_bytes = zip_buffer.getvalue()
+
+    class FakeResp:
+        status_code = 200
+
+        class raw:
+            decode_content = True
+
+            @staticmethod
+            def read():
+                return zip_bytes
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        RiiCaseProvider, "_request_with_retry", lambda self, *a, **kw: FakeResp()
+    )
+
+    provider = RiiCaseProvider(request_delay=0)
+    cases = []
+    reached_limit = provider._fetch_and_parse_cases(["TESTDOC"], cases)
+    assert reached_limit is False
+    assert len(cases) == 1
+    assert cases[0]["court_name"] == "BGH"
+    assert cases[0]["file_number"] == "1 ZR 99/24"
+
+
+def test_rii_fetch_and_parse_cases_limit(monkeypatch):
+    """_fetch_and_parse_cases returns True when limit is reached."""
+    import io
+    import zipfile
+
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+    <dokument>
+        <doknr>TESTDOC</doknr>
+        <gertyp>BGH</gertyp>
+        <entsch-datum>20240601</entsch-datum>
+        <aktenzeichen>1 ZR 99/24</aktenzeichen>
+        <tenor><p>Decision text</p></tenor>
+        <accessRights>public</accessRights>
+    </dokument>"""
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr("TESTDOC.xml", xml_content)
+    zip_bytes = zip_buffer.getvalue()
+
+    class FakeResp:
+        status_code = 200
+
+        class raw:
+            decode_content = True
+
+            @staticmethod
+            def read():
+                return zip_bytes
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        RiiCaseProvider, "_request_with_retry", lambda self, *a, **kw: FakeResp()
+    )
+
+    provider = RiiCaseProvider(limit=1, request_delay=0)
+    cases = []
+    reached_limit = provider._fetch_and_parse_cases(["DOC1", "DOC2"], cases)
+    assert reached_limit is True
+    assert len(cases) == 1
+
+
+def test_rii_fetch_and_parse_cases_zip_error(monkeypatch):
+    """_fetch_and_parse_cases skips docs when ZIP download fails."""
+    import requests
+
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    def mock_get_xml_from_zip(self, url):
+        raise requests.ConnectionError("download failed")
+
+    monkeypatch.setattr(RiiCaseProvider, "_get_xml_from_zip", mock_get_xml_from_zip)
+
+    provider = RiiCaseProvider(request_delay=0)
+    cases = []
+    reached_limit = provider._fetch_and_parse_cases(["FAIL1"], cases)
+    assert reached_limit is False
+    assert len(cases) == 0
+
+
+def test_rii_fetch_and_parse_cases_xml_none(monkeypatch):
+    """_fetch_and_parse_cases skips docs when ZIP contains no XML."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    monkeypatch.setattr(RiiCaseProvider, "_get_xml_from_zip", lambda self, url: None)
+
+    provider = RiiCaseProvider(request_delay=0)
+    cases = []
+    reached_limit = provider._fetch_and_parse_cases(["NOXML1"], cases)
+    assert reached_limit is False
+    assert len(cases) == 0
+
+
+def test_rii_fetch_and_parse_cases_parse_error(monkeypatch):
+    """_fetch_and_parse_cases skips docs when XML parsing fails."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    monkeypatch.setattr(
+        RiiCaseProvider, "_get_xml_from_zip", lambda self, url: "<invalid xml"
+    )
+
+    provider = RiiCaseProvider(request_delay=0)
+    cases = []
+    reached_limit = provider._fetch_and_parse_cases(["BADXML"], cases)
+    assert reached_limit is False
+    assert len(cases) == 0
+
+
+def test_rii_get_cases_with_dates(monkeypatch):
+    """_get_cases_with_dates orchestrates date search + pagination."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    page_calls = [0]
+
+    def mock_submit_date_search(self):
+        return ["DOC1"]
+
+    def mock_fetch_and_parse(self, ids, cases):
+        for doc_id in ids:
+            cases.append({"court_name": "BGH", "file_number": doc_id})
+        return False
+
+    def mock_get_date_search_page(self, page_num):
+        page_calls[0] += 1
+        if page_calls[0] == 1:
+            return ["DOC2"]
+        return []  # empty to trigger stop
+
+    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", mock_submit_date_search)
+    monkeypatch.setattr(RiiCaseProvider, "_fetch_and_parse_cases", mock_fetch_and_parse)
+    monkeypatch.setattr(
+        RiiCaseProvider, "_get_date_search_page", mock_get_date_search_page
+    )
+    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
+
+    provider = RiiCaseProvider(
+        date_from="2025-01-01", date_to="2025-06-30", request_delay=0
+    )
+    cases = provider._get_cases_with_dates()
+    assert len(cases) == 2
+    assert cases[0]["file_number"] == "DOC1"
+    assert cases[1]["file_number"] == "DOC2"
+
+
+def test_rii_get_cases_with_dates_empty_first_page(monkeypatch):
+    """_get_cases_with_dates returns empty when first search has no IDs."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", lambda self: [])
+    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
+
+    provider = RiiCaseProvider(date_from="2025-01-01", request_delay=0)
+    cases = provider._get_cases_with_dates()
+    assert cases == []
+
+
+def test_rii_get_cases_with_dates_limit_on_first_page(monkeypatch):
+    """_get_cases_with_dates stops when limit is reached on first page."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", lambda self: ["DOC1"])
+
+    def mock_fetch_and_parse(self, ids, cases):
+        cases.append({"court_name": "BGH"})
+        return True  # limit reached
+
+    monkeypatch.setattr(RiiCaseProvider, "_fetch_and_parse_cases", mock_fetch_and_parse)
+    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
+
+    provider = RiiCaseProvider(date_from="2025-01-01", limit=1, request_delay=0)
+    cases = provider._get_cases_with_dates()
+    assert len(cases) == 1
+
+
+def test_rii_get_cases_with_dates_page_error(monkeypatch):
+    """_get_cases_with_dates handles errors on subsequent pages gracefully."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", lambda self: ["DOC1"])
+    monkeypatch.setattr(
+        RiiCaseProvider,
+        "_fetch_and_parse_cases",
+        lambda self, ids, cases: False,
+    )
+
+    def mock_get_date_search_page(self, page_num):
+        raise RuntimeError("page failed")
+
+    monkeypatch.setattr(
+        RiiCaseProvider, "_get_date_search_page", mock_get_date_search_page
+    )
+    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
+
+    provider = RiiCaseProvider(date_from="2025-01-01", request_delay=0)
+    cases = provider._get_cases_with_dates()
+    assert cases == []
+
+
+def test_rii_get_cases_dispatches_to_date_search(monkeypatch):
+    """get_cases dispatches to _get_cases_with_dates when dates are set."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    dispatch_called = [None]
+
+    def mock_get_cases_with_dates(self):
+        dispatch_called[0] = "dates"
+        return [{"court_name": "BGH"}]
+
+    def mock_get_cases_full_fetch(self):
+        dispatch_called[0] = "full"
+        return []
+
+    monkeypatch.setattr(
+        RiiCaseProvider, "_get_cases_with_dates", mock_get_cases_with_dates
+    )
+    monkeypatch.setattr(
+        RiiCaseProvider, "_get_cases_full_fetch", mock_get_cases_full_fetch
+    )
+
+    provider = RiiCaseProvider(date_from="2025-01-01", request_delay=0)
+    cases = provider.get_cases()
+    assert dispatch_called[0] == "dates"
+    assert len(cases) == 1
+
+
+def test_rii_get_cases_dispatches_to_full_fetch(monkeypatch):
+    """get_cases dispatches to _get_cases_full_fetch when no dates are set."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    dispatch_called = [None]
+
+    def mock_get_cases_with_dates(self):
+        dispatch_called[0] = "dates"
+        return []
+
+    def mock_get_cases_full_fetch(self):
+        dispatch_called[0] = "full"
+        return [{"court_name": "BGH"}]
+
+    monkeypatch.setattr(
+        RiiCaseProvider, "_get_cases_with_dates", mock_get_cases_with_dates
+    )
+    monkeypatch.setattr(
+        RiiCaseProvider, "_get_cases_full_fetch", mock_get_cases_full_fetch
+    )
+
+    provider = RiiCaseProvider(request_delay=0)
+    cases = provider.get_cases()
+    assert dispatch_called[0] == "full"
+    assert len(cases) == 1
+
+
+# ===================================================================
+# --- JurisCaseProvider: date search ---
+# ===================================================================
+
+
+def test_juris_iso_to_german_date():
+    """_iso_to_german_date converts YYYY-MM-DD to DD.MM.YYYY."""
+    from oldp_ingestor.providers.de.juris import JurisCaseProvider
+
+    assert JurisCaseProvider._iso_to_german_date("2025-03-15") == "15.03.2025"
+    assert JurisCaseProvider._iso_to_german_date("2024-12-01") == "01.12.2024"
+    # Invalid format returned as-is
+    assert JurisCaseProvider._iso_to_german_date("invalid") == "invalid"
+    assert JurisCaseProvider._iso_to_german_date("2025-03") == "2025-03"
+
+
+def test_juris_submit_search_with_dates(monkeypatch):
+    """_submit_search_with_dates fills date fields and returns HTML."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    calls = {}
+
+    class FakeLocator:
+        def __init__(self, name=""):
+            self.name = name
+
+        @property
+        def first(self):
+            return self
+
+        def click(self):
+            calls.setdefault("clicks", []).append(self.name)
+
+        def fill(self, val):
+            calls.setdefault("fills", []).append((self.name, val))
+
+        def wait_for(self, timeout=None):
+            pass
+
+    class FakePage:
+        def goto(self, url, timeout=None):
+            calls["goto_url"] = url
+
+        def wait_for_load_state(self, state, timeout=None):
+            pass
+
+        def locator(self, selector):
+            return FakeLocator(selector)
+
+        def wait_for_selector(self, selector, timeout=None):
+            pass
+
+        def content(self):
+            return '<a href="/bsbe/document/DATETEST01/">Link</a>'
+
+        def close(self):
+            calls["page_closed"] = True
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+    def mock_ensure_browser(self):
+        self._context = FakeContext()
+
+    monkeypatch.setattr(BbBeCaseProvider, "_ensure_browser", mock_ensure_browser)
+
+    provider = BbBeCaseProvider(
+        date_from="2025-01-01", date_to="2025-06-30", request_delay=0
+    )
+    html = provider._submit_search_with_dates()
+
+    assert "DATETEST01" in html
+    assert provider._search_submitted is True
+    assert calls.get("page_closed") is True
+    # Check that date fills happened
+    fill_vals = [v for _, v in calls.get("fills", [])]
+    assert "01.01.2025" in fill_vals
+    assert "30.06.2025" in fill_vals
+
+
+def test_juris_get_cases_date_branch_page1(monkeypatch):
+    """get_cases uses _submit_search_with_dates when page=1 and dates are set."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    submit_called = [False]
+
+    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
+    detail_html = """<html><body><table>
+        <tr><td class="TD30"><strong>Gericht:</strong></td>
+        <td class="TD70">AG Berlin</td></tr>
+        <tr><td class="TD30"><strong>Entscheidungsdatum:</strong></td>
+        <td class="TD70">15.06.2025</td></tr>
+        <tr><td class="TD30"><strong>Aktenzeichen:</strong></td>
+        <td class="TD70">1 C 1/25</td></tr>
+    </table>
+    <div class="docLayoutText"><p>This is the decision content.</p></div>
+    </body></html>"""
+
+    def mock_submit_search_with_dates(self):
+        submit_called[0] = True
+        return search_result_html
+
+    page_call_count = [0]
+
+    def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
+        page_call_count[0] += 1
+        if "Suchportlet" in url:
+            return "<html><body>empty</body></html>"
+        return detail_html
+
+    monkeypatch.setattr(
+        BbBeCaseProvider, "_submit_search_with_dates", mock_submit_search_with_dates
+    )
+    monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
+    monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
+
+    provider = BbBeCaseProvider(
+        date_from="2025-01-01", date_to="2025-12-31", limit=10, request_delay=0
+    )
+    cases = provider.get_cases()
+
+    assert submit_called[0] is True
+    assert len(cases) == 1
+    assert cases[0]["court_name"] == "AG Berlin"
+    assert cases[0]["date"] == "2025-06-15"
+
+
+def test_juris_get_cases_date_branch_submit_error(monkeypatch):
+    """get_cases handles _submit_search_with_dates failure gracefully."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    def mock_submit_search_with_dates(self):
+        raise RuntimeError("Playwright crashed")
+
+    monkeypatch.setattr(
+        BbBeCaseProvider, "_submit_search_with_dates", mock_submit_search_with_dates
+    )
+    monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
+
+    provider = BbBeCaseProvider(date_from="2025-01-01", limit=10, request_delay=0)
+    cases = provider.get_cases()
+    assert cases == []
+
+
+# ===================================================================
+# --- NrwCaseProvider: date search ---
+# ===================================================================
+
+
+def test_nrw_to_german_date():
+    """_to_german_date converts YYYY-MM-DD to DD.MM.YYYY."""
+    from oldp_ingestor.providers.de.nrw import NrwCaseProvider
+
+    assert NrwCaseProvider._to_german_date("2025-03-15") == "15.03.2025"
+    assert NrwCaseProvider._to_german_date("2024-12-01") == "01.12.2024"
+    # Already German format is passed through
+    assert NrwCaseProvider._to_german_date("15.03.2025") == "15.03.2025"
+    # Invalid format returned as-is
+    assert NrwCaseProvider._to_german_date("invalid") == "invalid"
+    assert NrwCaseProvider._to_german_date("2025-03") == "2025-03"
+
+
+def test_nrw_search_page_advanced(monkeypatch):
+    """_search_page sends advanced_search=true when dates are set."""
+    from oldp_ingestor.providers.de.nrw import NrwCaseProvider
+
+    captured_data = {}
+
+    result_html = """<html><body>
+        <div class="einErgebnis">
+            <a href="https://nrwesuche.justiz.nrw.de/nrwe/test/case1.html">Link</a>
+        </div>
+    </body></html>"""
+
+    class FakeResp:
+        status_code = 200
+        text = result_html
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        captured_data.update(kwargs.get("data", {}))
+        return FakeResp()
+
+    monkeypatch.setattr(NrwCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NrwCaseProvider(
+        date_from="2025-01-01", date_to="2025-06-30", request_delay=0
+    )
+    links = provider._search_page(1)
+
+    assert len(links) == 1
+    assert captured_data.get("advanced_search") == "true"
+    assert captured_data.get("von") == "01.01.2025"
+    assert captured_data.get("bis") == "30.06.2025"
+
+
+def test_nrw_search_page_no_dates(monkeypatch):
+    """_search_page sends advanced_search=false when no dates."""
+    from oldp_ingestor.providers.de.nrw import NrwCaseProvider
+
+    captured_data = {}
+
+    class FakeResp:
+        status_code = 200
+        text = "<html><body></body></html>"
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        captured_data.update(kwargs.get("data", {}))
+        return FakeResp()
+
+    monkeypatch.setattr(NrwCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NrwCaseProvider(request_delay=0)
+    provider._search_page(1)
+
+    assert captured_data.get("advanced_search") == "false"
+    assert captured_data.get("von") == ""
+    assert captured_data.get("bis") == ""
+
+
+def test_nrw_get_cases_with_date_filtering(monkeypatch):
+    """NRW get_cases applies _is_within_date_range to exclude out-of-range cases."""
+    from oldp_ingestor.providers.de.nrw import NrwCaseProvider
+
+    search_html = """<html><body>
+        <div class="einErgebnis">
+            <a href="https://nrwesuche.justiz.nrw.de/nrwe/test/case1.html">Link</a>
+        </div>
+    </body></html>"""
+
+    # Case date is outside the requested range
+    case_html = """<html><body>
+        <div class="feldbezeichnung">Gericht:</div>
+        <div class="feldinhalt">Landgericht Bonn</div>
+        <div class="feldbezeichnung">Datum:</div>
+        <div class="feldinhalt">01.01.2020</div>
+        <div class="feldbezeichnung">Aktenzeichen:</div>
+        <div class="feldinhalt">1 O 1/20</div>
+        <p class="absatzLinks">Case decision text content.</p>
+    </body></html>"""
+
+    call_count = [0]
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        call_count[0] += 1
+        resp = FakeResp()
+        if method == "POST":
+            if call_count[0] <= 1:
+                resp.text = search_html
+            else:
+                resp.text = "<html><body></body></html>"
+        else:
+            resp.text = case_html
+        return resp
+
+    monkeypatch.setattr(NrwCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NrwCaseProvider(
+        date_from="2025-01-01", date_to="2025-12-31", limit=10, request_delay=0
+    )
+    cases = provider.get_cases()
+    assert len(cases) == 0  # 2020-01-01 is outside range
+
+
+# ===================================================================
+# --- PlaywrightBaseClient: close and ensure_browser ---
+# ===================================================================
+
+
+def test_playwright_close_with_initialized_fields():
+    """close() on a client with manually set fields should nullify them."""
+    from oldp_ingestor.providers.playwright_client import PlaywrightBaseClient
+
+    class FakeContext:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeBrowser:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakePlaywright:
+        stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+    client = PlaywrightBaseClient()
+    ctx = FakeContext()
+    browser = FakeBrowser()
+    pw = FakePlaywright()
+
+    client._context = ctx
+    client._browser = browser
+    client._playwright = pw
+
+    client.close()
+
+    assert ctx.closed
+    assert browser.closed
+    assert pw.stopped
+    assert client._context is None
+    assert client._browser is None
+    assert client._playwright is None
+
+
+def test_playwright_close_idempotent():
+    """Calling close() twice should not error."""
+    from oldp_ingestor.providers.playwright_client import PlaywrightBaseClient
+
+    client = PlaywrightBaseClient()
+    client.close()
+    client.close()  # second call is a no-op
+
+
+def test_playwright_ensure_browser_idempotent_when_set():
+    """_ensure_browser does not recreate browser when already set."""
+    from oldp_ingestor.providers.playwright_client import PlaywrightBaseClient
+
+    class FakeBrowser:
+        pass
+
+    client = PlaywrightBaseClient(request_delay=0, headless=True)
+    # Simulate a browser that's already started
+    fake_browser = FakeBrowser()
+    client._browser = fake_browser
+
+    # _ensure_browser should be a no-op when _browser is set
+    client._ensure_browser()
+    assert client._browser is fake_browser
+
+
+def test_rii_submit_date_search_timeout_warning(monkeypatch):
+    """_submit_date_search handles timeout on result wait gracefully."""
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        def click(self):
+            pass
+
+        def fill(self, val):
+            pass
+
+        def type(self, val):
+            pass
+
+    class FakePage:
+        def goto(self, url, timeout=None):
+            pass
+
+        def wait_for_load_state(self, state, timeout=None):
+            pass
+
+        def locator(self, selector):
+            return FakeLocator()
+
+        def wait_for_selector(self, selector, timeout=None):
+            # Simulate timeout on the result wait
+            if "resultList" in selector:
+                raise TimeoutError("timeout waiting for results")
+
+        def content(self):
+            return '<a href="?doc.id=TIMEOUT001&x=1">Link</a>'
+
+        def close(self):
+            pass
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+    def mock_ensure_browser(self):
+        self._context = FakeContext()
+
+    monkeypatch.setattr(RiiCaseProvider, "_ensure_browser", mock_ensure_browser)
+
+    provider = RiiCaseProvider(date_from="2025-01-01", request_delay=0)
+    ids = provider._submit_date_search()
+
+    # Despite timeout, should still extract IDs from page content
+    assert "TIMEOUT001" in ids
+    assert provider._date_search_submitted is True
+
+
+def test_juris_search_url_after_submit():
+    """_search_url returns empty string when _search_submitted is True and page=1."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    provider = BbBeCaseProvider.__new__(BbBeCaseProvider)
+    provider.BASE_URL = "https://gesetze.berlin.de/bsbe"
+    provider._search_submitted = True
+
+    url = provider._search_url(1)
+    assert url == ""
+
+
+def test_juris_submit_search_extended_search_failure(monkeypatch):
+    """_submit_search_with_dates handles extended search open failure."""
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        def click(self):
+            pass
+
+        def fill(self, val):
+            pass
+
+        def wait_for(self, timeout=None):
+            raise TimeoutError("extended search not found")
+
+    class FakePage:
+        def goto(self, url, timeout=None):
+            pass
+
+        def wait_for_load_state(self, state, timeout=None):
+            pass
+
+        def locator(self, selector):
+            return FakeLocator()
+
+        def wait_for_selector(self, selector, timeout=None):
+            raise TimeoutError("not found")
+
+        def content(self):
+            return "<html><body>fallback content</body></html>"
+
+        def close(self):
+            pass
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+    def mock_ensure_browser(self):
+        self._context = FakeContext()
+
+    monkeypatch.setattr(BbBeCaseProvider, "_ensure_browser", mock_ensure_browser)
+
+    provider = BbBeCaseProvider(date_from="2025-01-01", request_delay=0)
+    html = provider._submit_search_with_dates()
+
+    # Should return page content even on failure
+    assert "fallback content" in html
