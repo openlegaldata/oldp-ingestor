@@ -41,10 +41,21 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
     same SPA architecture. Subclasses only override BASE_URL and
     potentially CSS selectors.
 
+    Supports server-side date filtering via Playwright extended search
+    form. When date_from/date_to are set, Playwright clicks "Erweiterte
+    Suche" to reveal date fields, fills ``#DatumInputFrom`` /
+    ``#DatumInputTo`` (DD.MM.YYYY format), and submits the search. The
+    portal returns only matching results. All 10 state subclasses
+    inherit this behavior.
+
     Args:
         court: Optional court filter.
-        date_from: Optional start date (YYYY-MM-DD).
-        date_to: Optional end date (YYYY-MM-DD).
+        date_from: Optional start date (YYYY-MM-DD). Triggers Playwright-based
+            extended search; filled into ``#DatumInputFrom`` (DD.MM.YYYY) for
+            server-side filtering.
+        date_to: Optional end date (YYYY-MM-DD). Triggers Playwright-based
+            extended search; filled into ``#DatumInputTo`` (DD.MM.YYYY) for
+            server-side filtering.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between page loads.
     """

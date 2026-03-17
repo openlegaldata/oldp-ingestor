@@ -72,6 +72,18 @@ oldp-ingestor -v cases --provider sn-ovg --date-from 2025-01-01
 bash dev-deployment/ingest.sh cases sn-ovg
 ```
 
+## Date Filtering
+
+Date filtering is server-side via the `datum` POST parameter, but only at
+year-level granularity. The portal accepts:
+
+- Single year: `2025` (filters to that year)
+- Year range: `2024-2025` (filters to years in range)
+
+Day-level date ranges (DD.MM.YYYY) return 0 results and are not supported by
+the portal. Therefore, day-level precision is applied client-side via
+`_is_within_date_range` after fetching.
+
 ## Known Quirks
 
 - **Single-page results**: The search returns all matching results on a single

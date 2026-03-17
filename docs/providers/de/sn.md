@@ -90,6 +90,17 @@ oldp-ingestor -v cases --provider sn --date-from 2025-01-01
 bash dev-deployment/ingest.sh cases sn
 ```
 
+## Date Filtering
+
+Date filtering is server-side via Playwright form interaction with the ASP.NET
+WebForms search page. When `--date-from` / `--date-to` CLI flags are provided:
+
+1. Playwright fills `#DV1_C34` (from) and `#DV1_C35` (to) with DD.MM.YYYY values
+2. Clicks the search button (`#DV1_C24`)
+3. The server returns only results matching the requested date range
+
+Date format uses German notation: `DD.MM.YYYY` (converted from ISO internally).
+
 ## Known Quirks
 
 - **Playwright required**: The ASP.NET WebForms application relies on

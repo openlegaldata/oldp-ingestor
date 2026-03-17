@@ -43,6 +43,16 @@ Content is extracted from `<section class="wkde-document-body">`.
 - 12 results per page (fixed by portal)
 - Stops after 2 consecutive empty pages (same pattern as NRW)
 
+## Date Filtering
+
+Date filtering is server-side via GET query parameters:
+
+- `date` — start date (YYYY-MM-DD)
+- `end_date_range` — end date (YYYY-MM-DD)
+
+Results are also sorted by `sort_order=date_asc`. The server returns only
+results matching the requested date range.
+
 ## Usage
 
 ```bash

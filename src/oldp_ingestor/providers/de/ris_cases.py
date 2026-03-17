@@ -25,10 +25,16 @@ logger = logging.getLogger(__name__)
 class RISCaseProvider(RISBaseClient, CaseProvider):
     """Fetches case law from the RIS API.
 
+    Supports server-side date filtering via ``decisionDateFrom`` and
+    ``decisionDateTo`` API query parameters (ISO 8601 format). When set,
+    the API returns only decisions within the requested date range.
+
     Args:
         court: Optional court code filter (e.g. ``"BGH"``).
-        date_from: Only fetch decisions on or after this date (ISO 8601).
-        date_to: Only fetch decisions on or before this date (ISO 8601).
+        date_from: Optional start date filter (ISO 8601). Passed as
+            ``decisionDateFrom`` query parameter for server-side filtering.
+        date_to: Optional end date filter (ISO 8601). Passed as
+            ``decisionDateTo`` query parameter for server-side filtering.
         limit: Maximum number of cases to return (client-side).
         request_delay: Delay in seconds between API requests.
     """

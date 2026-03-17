@@ -51,13 +51,19 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
     For each court, paginates through search results, downloads ZIP files
     containing XML decisions, and maps XML fields to OLDP case dicts.
 
-    When date_from/date_to are set, uses Playwright to submit the extended
-    search form with date fields. Otherwise, uses the fast HTTP-only listing.
+    Supports server-side date filtering via Playwright extended search form.
+    When date_from/date_to are set, Playwright navigates to the search page,
+    clicks "Erweiterte Suche", fills ``#dateFrom``/``#dateTo`` fields
+    (DD.MM.YYYY format), and submits the form. The portal returns only
+    matching results. When no dates are set, falls back to the fast
+    HTTP-only per-court listing (no Playwright needed).
 
     Args:
         court: Optional single court code (e.g. "bverfg"). If None, all courts.
-        date_from: Optional start date (YYYY-MM-DD).
-        date_to: Optional end date (YYYY-MM-DD).
+        date_from: Optional start date (YYYY-MM-DD). Triggers Playwright-based
+            extended search with server-side date filtering via ``#dateFrom``.
+        date_to: Optional end date (YYYY-MM-DD). Triggers Playwright-based
+            extended search with server-side date filtering via ``#dateTo``.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """

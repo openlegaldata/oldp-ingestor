@@ -27,10 +27,20 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
 
     Uses POST-based search with form data. Session-based with cookies.
 
+    Supports server-side date filtering via the extended search form
+    (``advanced_search=true``). The ``von`` and ``bis`` POST parameters
+    accept DD.MM.YYYY format. When dates are set, the search is
+    submitted as an advanced search and the server returns only matching
+    results.
+
     Args:
         court_type: Optional filter by court type (gerichtstyp).
-        date_from: Optional start date filter (DD.MM.YYYY format for NRW).
-        date_to: Optional end date filter (DD.MM.YYYY format for NRW).
+        date_from: Optional start date filter (YYYY-MM-DD). Sent as ``von``
+            POST parameter (DD.MM.YYYY) with ``advanced_search=true`` for
+            server-side filtering.
+        date_to: Optional end date filter (YYYY-MM-DD). Sent as ``bis``
+            POST parameter (DD.MM.YYYY) with ``advanced_search=true`` for
+            server-side filtering.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """

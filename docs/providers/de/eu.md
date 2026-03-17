@@ -83,6 +83,21 @@ oldp-ingestor -v cases --provider eu --date-from 2024-01-01 --date-to 2024-12-31
 bash dev-deployment/ingest.sh cases eu
 ```
 
+## Date Filtering
+
+Date filtering is server-side via SPARQL `FILTER` clauses on the `?date`
+variable. When `--date-from` / `--date-to` CLI flags are provided, the SPARQL
+query includes:
+
+```sparql
+FILTER(?date >= "2025-01-01"^^xsd:date)
+FILTER(?date <= "2025-12-31"^^xsd:date)
+```
+
+The CELLAR endpoint returns only ECLIs matching the requested date range.
+Content is fetched from the CELLAR API (`publications.europa.eu/resource/celex/`)
+since `eur-lex.europa.eu` has an AWS WAF that blocks non-browser requests.
+
 ## Known Quirks
 
 - **File number extraction**: File numbers (e.g. `C-42/24`) are extracted from the title

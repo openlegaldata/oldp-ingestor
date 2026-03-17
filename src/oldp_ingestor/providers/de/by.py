@@ -56,13 +56,17 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
     Uses session-based navigation with cookie state. Pages through
     search results, downloads ZIP/XML for each case.
 
-    Supports server-side date filtering via the search form's
-    SearchFields.DatumVon/DatumBis fields (DD.MM.YYYY format).
-    Requires a __RequestVerificationToken (ASP.NET anti-forgery).
+    Supports server-side date filtering via POST to ``/Search`` with
+    ``SearchFields.DatumVon`` / ``SearchFields.DatumBis`` form fields
+    (DD.MM.YYYY format). The POST also requires a
+    ``__RequestVerificationToken`` (ASP.NET CSRF token) extracted from
+    the search form HTML.
 
     Args:
-        date_from: Optional start date (YYYY-MM-DD).
-        date_to: Optional end date (YYYY-MM-DD).
+        date_from: Optional start date (YYYY-MM-DD). Sent as
+            ``SearchFields.DatumVon`` (DD.MM.YYYY) for server-side filtering.
+        date_to: Optional end date (YYYY-MM-DD). Sent as
+            ``SearchFields.DatumBis`` (DD.MM.YYYY) for server-side filtering.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """

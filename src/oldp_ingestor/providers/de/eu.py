@@ -71,11 +71,23 @@ class EuCaseProvider(ScraperBaseClient, CaseProvider):
     Uses the CELLAR SPARQL endpoint for ECLI search and EUR-Lex HTML/XML
     endpoints for case details and content.
 
+    Supports server-side date filtering via SPARQL ``FILTER`` clauses on
+    the ``?date`` variable. When date_from/date_to are set, the SPARQL
+    query includes ``FILTER(?date >= "..."^^xsd:date)`` /
+    ``FILTER(?date <= "..."^^xsd:date)`` so only matching ECLIs are
+    returned from the CELLAR endpoint. Content is fetched from the CELLAR
+    API (publications.europa.eu/resource/celex/) since eur-lex.europa.eu
+    has an AWS WAF that blocks non-browser requests.
+
     Args:
         username: EUR-Lex web service username (unused, kept for CLI compat).
         password: EUR-Lex web service password (unused, kept for CLI compat).
-        date_from: Optional start date filter (YYYY-MM-DD).
-        date_to: Optional end date filter (YYYY-MM-DD).
+        date_from: Optional start date filter (YYYY-MM-DD). Added as
+            ``FILTER(?date >= ...)`` in the SPARQL query for server-side
+            filtering.
+        date_to: Optional end date filter (YYYY-MM-DD). Added as
+            ``FILTER(?date <= ...)`` in the SPARQL query for server-side
+            filtering.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """

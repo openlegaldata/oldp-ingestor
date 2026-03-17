@@ -172,6 +172,18 @@ The ingestor caches this on first use to resolve court codes to full names.
 | `headline` | `title` | Optional |
 | `guidingPrinciple` / `headnote` / `tenor` | `abstract` | First non-empty wins, truncated to 50 000 chars |
 
+## Date Filtering
+
+Both legislation and case law endpoints support server-side date filtering via
+query parameters:
+
+- **Legislation**: `dateFrom` / `dateTo` (adoption date range, ISO 8601)
+- **Case law**: `decisionDateFrom` / `decisionDateTo` (decision date range, ISO 8601)
+
+When `--date-from` / `--date-to` CLI flags are provided, the corresponding query
+parameters are included in the API request, so the server returns only matching
+results. No client-side filtering is needed.
+
 ## Request volume estimates
 
 Each **law book** costs: 1 list page request + 1 expression detail + N article

@@ -75,9 +75,10 @@ Each row also has a `data-date` attribute (YYYY-MM-DD) used for date filtering.
 
 ## Date Filtering
 
-Date filtering is done client-side using the `data-date` row attribute after
-fetching. The `--date-from` and `--date-to` CLI flags are applied against this
-attribute.
+Date filtering is primarily server-side via per-court portal date parameters in
+the search URL. Client-side filtering using the `data-date` row attribute
+(``_is_within_date_range``) is applied as a fallback to ensure precision when
+the portal's server-side filtering is coarse.
 
 ## Usage
 

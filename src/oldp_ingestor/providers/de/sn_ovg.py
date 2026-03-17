@@ -26,9 +26,18 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
     (no server-side pagination). Document details and PDF links are
     fetched per document.
 
+    Supports server-side date filtering via the ``datum`` POST parameter
+    in year-only format (YYYY or YYYY-YYYY range). The portal does not
+    support day-level server-side filtering, so day-level precision is
+    applied client-side via ``_is_within_date_range``.
+
     Args:
         date_from: Only include decisions on or after this date (YYYY-MM-DD).
+            Year is extracted and sent as ``datum`` POST parameter for
+            server-side filtering. Day-level filtering applied client-side.
         date_to: Only include decisions on or before this date (YYYY-MM-DD).
+            Year is extracted and sent as ``datum`` POST parameter for
+            server-side filtering. Day-level filtering applied client-side.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """

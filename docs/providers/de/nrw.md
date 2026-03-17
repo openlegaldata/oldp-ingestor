@@ -65,6 +65,17 @@ oldp-ingestor -v cases --provider nrw --date-from 2025-01-01
 bash dev-deployment/ingest.sh cases nrw
 ```
 
+## Date Filtering
+
+Date filtering is server-side via POST extended search. When `--date-from` /
+`--date-to` CLI flags are provided, the search is submitted with
+`advanced_search=true` and the following POST parameters:
+
+- `von` — start date (DD.MM.YYYY, converted from ISO)
+- `bis` — end date (DD.MM.YYYY, converted from ISO)
+
+The server returns only results matching the requested date range.
+
 ## Known Quirks
 
 - **Validation**: Cases missing `court_name` or `file_number` are skipped.
