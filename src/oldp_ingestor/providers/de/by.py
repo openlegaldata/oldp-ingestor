@@ -79,8 +79,9 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=BY_BASE_URL, request_delay=request_delay)
+        super().__init__(base_url=BY_BASE_URL, request_delay=request_delay, proxy=proxy)
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit

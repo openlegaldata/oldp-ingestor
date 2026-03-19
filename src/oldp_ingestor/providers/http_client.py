@@ -33,13 +33,23 @@ class HttpBaseClient:
     Manages a requests.Session with configurable request delay
     and automatic retry with exponential backoff on 429/503 responses and
     connection errors. Respects Retry-After headers when present.
+
+    Args:
+        base_url: Base URL prepended to relative paths.
+        request_delay: Delay in seconds between requests.
+        proxy: Optional SOCKS5/HTTP proxy URL (e.g. ``"socks5h://localhost:1080"``).
+            Applied to all requests made by this client.
     """
 
-    def __init__(self, base_url: str = "", request_delay: float = 0.2):
+    def __init__(
+        self, base_url: str = "", request_delay: float = 0.2, proxy: str | None = None
+    ):
         self.base_url = base_url
         self.request_delay = request_delay
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
+        if proxy:
+            self.session.proxies = {"http": proxy, "https": proxy}
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> Response:
         """Execute HTTP request with retry on 429/503 and connection errors.

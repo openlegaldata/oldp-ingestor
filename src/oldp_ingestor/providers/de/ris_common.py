@@ -38,5 +38,5 @@ class RISBaseClient(HttpBaseClient):
     :class:`HttpBaseClient`, with RIS base URL pre-configured.
     """
 
-    def __init__(self, request_delay: float = 0.2):
-        super().__init__(base_url=BASE_URL, request_delay=request_delay)
+    def __init__(self, request_delay: float = 0.2, proxy: str | None = None):
+        super().__init__(base_url=BASE_URL, request_delay=request_delay, proxy=proxy)

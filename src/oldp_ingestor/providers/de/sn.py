@@ -78,8 +78,9 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.5,
+        proxy: str | None = None,
     ):
-        super().__init__(request_delay=request_delay)
+        super().__init__(request_delay=request_delay, proxy=proxy)
         self.court = court
         self.date_from = date_from
         self.date_to = date_to
@@ -204,8 +205,8 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
         try:
             # Navigate to search page
             logger.info("Loading ESAMOSplus search page...")
-            page.goto(SEARCH_URL, timeout=30000)
-            page.wait_for_selector("#DV1_C24", timeout=15000)
+            page.goto(SEARCH_URL, timeout=60000)
+            page.wait_for_selector("#DV1_C24", timeout=30000)
 
             # Set court filter if specified
             if self.court:

@@ -110,8 +110,11 @@ class EuCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=EURLEX_BASE_URL, request_delay=request_delay)
+        super().__init__(
+            base_url=EURLEX_BASE_URL, request_delay=request_delay, proxy=proxy
+        )
         self.username = username
         self.password = password
         self.date_from = date_from or ""

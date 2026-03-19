@@ -142,8 +142,9 @@ class RISProvider(RISBaseClient, LawProvider):
         date_from: str | None = None,
         date_to: str | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(request_delay=request_delay)
+        super().__init__(request_delay=request_delay, proxy=proxy)
         self.search_term = search_term
         self.limit = limit
         self.date_from = date_from

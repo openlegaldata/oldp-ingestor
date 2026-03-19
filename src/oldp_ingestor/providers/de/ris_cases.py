@@ -25,18 +25,22 @@ logger = logging.getLogger(__name__)
 class RISCaseProvider(RISBaseClient, CaseProvider):
     """Fetches case law from the RIS API.
 
-    Supports server-side date filtering via ``decisionDateFrom`` and
-    ``decisionDateTo`` API query parameters (ISO 8601 format). When set,
-    the API returns only decisions within the requested date range.
+    The RIS API does **not** honour ``decisionDateFrom`` / ``decisionDateTo``
+    query parameters — it always returns the most recent 10,000 decisions
+    regardless of any date filter.  Date filtering is therefore applied
+    client-side via :meth:`~oldp_ingestor.providers.base.CaseProvider._is_within_date_range`.
+
+    Because the API returns results in **descending** date order (newest
+    first), iteration stops as soon as a decision date falls before
+    ``date_from``, avoiding unnecessary page fetches.
 
     Args:
         court: Optional court code filter (e.g. ``"BGH"``).
-        date_from: Optional start date filter (ISO 8601). Passed as
-            ``decisionDateFrom`` query parameter for server-side filtering.
-        date_to: Optional end date filter (ISO 8601). Passed as
-            ``decisionDateTo`` query parameter for server-side filtering.
+        date_from: Optional start date filter (ISO 8601). Applied client-side.
+        date_to: Optional end date filter (ISO 8601). Applied client-side.
         limit: Maximum number of cases to return (client-side).
         request_delay: Delay in seconds between API requests.
+        proxy: Optional HTTP proxy URL (e.g. ``"http://user:pass@host:port"``).
     """
 
     SOURCE = {
@@ -51,8 +55,9 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(request_delay=request_delay)
+        super().__init__(request_delay=request_delay, proxy=proxy)
         self.court = court
         self.date_from = date_from
         self.date_to = date_to
@@ -179,12 +184,19 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
             params: dict = {"size": MAX_PAGE_SIZE, "pageIndex": page_index}
             if self.court:
                 params["courtType"] = self.court
-            if self.date_from:
-                params["decisionDateFrom"] = self.date_from
-            if self.date_to:
-                params["decisionDateTo"] = self.date_to
+            # Note: decisionDateFrom / decisionDateTo are ignored by the RIS API.
+            # Date filtering is applied client-side (see loop body below).
 
-            data = self._get_json("/v1/case-law", **params)
+            try:
+                data = self._get_json("/v1/case-law", **params)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 422:
+                    # The API returns 422 when pageIndex exceeds the 10 000-item cap.
+                    logger.debug(
+                        "422 on page %d — reached API boundary, stopping", page_index
+                    )
+                    break
+                raise
             members = data.get("member", [])
 
             if not members:
@@ -202,12 +214,32 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
                 total_items,
             )
 
+            done = False
             for member in members:
                 item = member.get("item", member)
                 document_number = item.get("documentNumber", "")
 
                 if not document_number:
                     logger.debug("Skipping case with missing documentNumber")
+                    continue
+
+                # Client-side date filter (API ignores decisionDateFrom/To params).
+                # Results are in descending date order, so once we pass date_from
+                # all remaining pages are also out of range.
+                decision_date = item.get("decisionDate", "")
+                if not self._is_within_date_range(decision_date):
+                    if (
+                        self.date_from
+                        and decision_date
+                        and decision_date < self.date_from
+                    ):
+                        logger.info(
+                            "Reached cases before date_from (%s) at %s, stopping",
+                            self.date_from,
+                            decision_date,
+                        )
+                        done = True
+                        break
                     continue
 
                 # Fetch HTML content
@@ -230,6 +262,9 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
 
                 if self.limit and len(cases) >= self.limit:
                     return cases
+
+            if done:
+                break
 
             # Check if there's a next page
             view = data.get("view", {})

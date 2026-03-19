@@ -126,6 +126,7 @@ def test_make_law_provider_ris(monkeypatch):
         date_from = "2025-01-01"
         date_to = "2025-12-31"
         request_delay = 0.5
+        proxy = None
 
     provider = _make_law_provider(FakeArgs())
     assert isinstance(provider, RISProvider)
@@ -145,6 +146,7 @@ def test_make_case_provider_ris(monkeypatch):
         date_to = "2026-06-30"
         limit = 10
         request_delay = 0.3
+        proxy = None
 
     provider = _make_case_provider(FakeArgs())
     assert isinstance(provider, RISCaseProvider)
@@ -756,6 +758,7 @@ def test_make_case_provider_rii(monkeypatch):
         date_to = None
         limit = 5
         request_delay = 0.1
+        proxy = None
 
     provider = _make_case_provider(FakeArgs())
     assert isinstance(provider, RiiCaseProvider)
@@ -775,6 +778,7 @@ def test_make_case_provider_by(monkeypatch):
         date_to = None
         limit = 10
         request_delay = 0.1
+        proxy = None
 
     provider = _make_case_provider(FakeArgs())
     assert isinstance(provider, ByCaseProvider)
@@ -792,6 +796,7 @@ def test_make_case_provider_nrw(monkeypatch):
         date_to = "2024-12-31"
         limit = 10
         request_delay = 0.1
+        proxy = None
 
     provider = _make_case_provider(FakeArgs())
     assert isinstance(provider, NrwCaseProvider)
@@ -809,6 +814,7 @@ def test_make_case_provider_juris_bb(monkeypatch):
         date_to = None
         limit = 5
         request_delay = 0.5
+        proxy = None
 
     provider = _make_case_provider(FakeArgs())
     assert isinstance(provider, BbBeCaseProvider)
@@ -826,6 +832,7 @@ def test_make_case_provider_juris_he(monkeypatch):
         date_to = None
         limit = 5
         request_delay = 0.5
+        proxy = None
 
     provider = _make_case_provider(FakeArgs())
     assert isinstance(provider, HeCaseProvider)
@@ -843,6 +850,7 @@ def test_make_case_provider_juris_th(monkeypatch):
         date_to = None
         limit = 5
         request_delay = 0.5
+        proxy = None
 
     provider = _make_case_provider(FakeArgs())
     assert isinstance(provider, ThCaseProvider)

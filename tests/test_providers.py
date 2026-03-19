@@ -1284,7 +1284,7 @@ def test_ris_provider_pagination(monkeypatch):
 
 
 def test_ris_case_provider_passes_filter_params(monkeypatch):
-    """court, date_from, date_to are passed as query params."""
+    """court filter is passed as courtType; date params are NOT sent (API ignores them)."""
     captured = {}
 
     def mock_get_json(self, path, **params):
@@ -1302,8 +1302,122 @@ def test_ris_case_provider_passes_filter_params(monkeypatch):
 
     assert cases == []
     assert captured["courtType"] == "BGH"
-    assert captured["decisionDateFrom"] == "2026-01-01"
-    assert captured["decisionDateTo"] == "2026-06-30"
+    # Date params are NOT forwarded — the RIS API ignores them server-side
+    assert "decisionDateFrom" not in captured
+    assert "decisionDateTo" not in captured
+
+
+def test_ris_case_provider_client_side_date_filter(monkeypatch):
+    """Cases outside date_from/date_to are skipped without fetching HTML."""
+    html_fetched = []
+
+    def mock_get_json(self, path, **params):
+        if path == "/v1/case-law":
+            return {
+                "member": [
+                    {
+                        "item": {
+                            "documentNumber": "RECENT",
+                            "courtName": "BGH",
+                            "fileNumbers": ["1/26"],
+                            "decisionDate": "2026-03-01",
+                        }
+                    },
+                    {
+                        "item": {
+                            "documentNumber": "IN-RANGE",
+                            "courtName": "BGH",
+                            "fileNumbers": ["2/23"],
+                            "decisionDate": "2023-11-15",
+                        }
+                    },
+                    {
+                        "item": {
+                            "documentNumber": "OLD",
+                            "courtName": "BGH",
+                            "fileNumbers": ["3/22"],
+                            "decisionDate": "2022-06-01",
+                        }
+                    },
+                ],
+                "view": {},
+            }
+        if path == "/v1/case-law/courts":
+            return [{"id": "BGH", "label": "Bundesgerichtshof"}]
+        return {}
+
+    def mock_get_text(self, path):
+        html_fetched.append(path)
+        return "<html><body><div>Case content here</div></body></html>"
+
+    monkeypatch.setattr(RISBaseClient, "_get_json", mock_get_json)
+    monkeypatch.setattr(RISBaseClient, "_get_text", mock_get_text)
+
+    provider = RISCaseProvider(
+        date_from="2023-11-01", date_to="2023-12-31", request_delay=0
+    )
+    cases = provider.get_cases()
+
+    # Only the in-range case should be returned
+    assert len(cases) == 1
+    assert cases[0]["date"] == "2023-11-15"
+    # HTML should only be fetched for the in-range case
+    assert any("IN-RANGE" in p for p in html_fetched)
+    assert not any("RECENT" in p for p in html_fetched)
+    assert not any("OLD" in p for p in html_fetched)
+
+
+def test_ris_case_provider_stops_at_date_from(monkeypatch):
+    """Stops paging when a case date falls before date_from (descending order)."""
+    page_calls = []
+
+    def mock_get_json(self, path, **params):
+        if path == "/v1/case-law":
+            page_calls.append(params.get("pageIndex", 0))
+            if params.get("pageIndex", 0) == 0:
+                return {
+                    "member": [
+                        {
+                            "item": {
+                                "documentNumber": "C1",
+                                "courtName": "BGH",
+                                "fileNumbers": ["1/23"],
+                                "decisionDate": "2023-12-01",
+                            }
+                        },
+                        # This date is before date_from — should trigger early stop
+                        {
+                            "item": {
+                                "documentNumber": "C2",
+                                "courtName": "BGH",
+                                "fileNumbers": ["2/23"],
+                                "decisionDate": "2022-10-01",
+                            }
+                        },
+                    ],
+                    "view": {"next": "/v1/case-law?pageIndex=1&size=300"},
+                }
+            # Page 1 should never be requested
+            return {"member": [], "view": {}}
+        if path == "/v1/case-law/courts":
+            return [{"id": "BGH", "label": "Bundesgerichtshof"}]
+        return {}
+
+    def mock_get_text(self, path):
+        return "<html><body><div>Case content</div></body></html>"
+
+    monkeypatch.setattr(RISBaseClient, "_get_json", mock_get_json)
+    monkeypatch.setattr(RISBaseClient, "_get_text", mock_get_text)
+
+    provider = RISCaseProvider(
+        date_from="2023-11-01", date_to="2023-12-31", request_delay=0
+    )
+    cases = provider.get_cases()
+
+    assert len(cases) == 1
+    assert cases[0]["date"] == "2023-12-01"
+    # Should only have fetched page 0 — no page 1
+    assert page_calls == [0]
 
 
 def test_ris_case_provider_skips_missing_document_number(monkeypatch):
@@ -1371,9 +1485,65 @@ def test_ris_case_provider_court_labels_failure_fallback(monkeypatch):
     assert cases[0]["court_name"] == "BGH"  # falls back to code
 
 
+def test_ris_case_provider_422_stops_pagination(monkeypatch):
+    """422 on a page (API boundary) stops pagination gracefully instead of crashing."""
+    import requests as req
+
+    page_calls = []
+
+    def mock_get_json(self, path, **params):
+        if path == "/v1/case-law":
+            page_calls.append(params.get("pageIndex", 0))
+            if params.get("pageIndex", 0) == 0:
+                return {
+                    "member": [
+                        {
+                            "item": {
+                                "documentNumber": "DOC-001",
+                                "courtName": "BGH",
+                                "fileNumbers": [],
+                                "decisionDate": "2026-01-01",
+                            }
+                        },
+                    ],
+                    "totalItems": 10000,
+                    "view": {"next": "/v1/case-law?pageIndex=1&size=300"},
+                }
+            # Simulate 422 on page 1 (boundary exceeded)
+            resp = req.Response()
+            resp.status_code = 422
+            raise req.HTTPError(response=resp)
+        return {}
+
+    monkeypatch.setattr(RISBaseClient, "_get_json", mock_get_json)
+
+    provider = RISCaseProvider(request_delay=0)
+    cases = provider.get_cases()  # must not raise
+
+    assert cases == []
+    assert page_calls == [0, 1]  # tried page 1, hit 422, stopped
+
+
 # ===================================================================
 # --- HttpBaseClient ---
 # ===================================================================
+
+
+def test_http_base_client_proxy_sets_session_proxies():
+    from oldp_ingestor.providers.http_client import HttpBaseClient
+
+    client = HttpBaseClient(proxy="socks5h://localhost:1080")
+    assert client.session.proxies == {
+        "http": "socks5h://localhost:1080",
+        "https": "socks5h://localhost:1080",
+    }
+
+
+def test_http_base_client_no_proxy_leaves_proxies_empty():
+    from oldp_ingestor.providers.http_client import HttpBaseClient
+
+    client = HttpBaseClient()
+    assert client.session.proxies == {}
 
 
 def test_http_base_client_get_prepends_base_url(monkeypatch):

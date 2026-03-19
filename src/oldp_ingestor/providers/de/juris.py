@@ -74,8 +74,9 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.5,
+        proxy: str | None = None,
     ):
-        super().__init__(request_delay=request_delay)
+        super().__init__(request_delay=request_delay, proxy=proxy)
         self.court = court
         self.date_from = date_from
         self.date_to = date_to

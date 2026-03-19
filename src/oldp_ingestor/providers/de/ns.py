@@ -48,8 +48,9 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=NS_BASE_URL, request_delay=request_delay)
+        super().__init__(base_url=NS_BASE_URL, request_delay=request_delay, proxy=proxy)
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit
@@ -63,7 +64,7 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
         params = {
             "query": "*",
             "publicationtype": "publicationform-ats-filter!ATS_Rechtsprechung",
-            "sort_order": "date_asc",
+            "sort_order": "date_desc",
             "page": str(page),
         }
         if self.date_from:

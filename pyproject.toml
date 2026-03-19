@@ -24,6 +24,7 @@ dependencies = [
     "cssselect",
     "playwright",
     "pymupdf",
+    "pysocks>=1.7.1",
 ]
 
 [project.urls]

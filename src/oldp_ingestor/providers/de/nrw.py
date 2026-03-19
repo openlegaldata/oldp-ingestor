@@ -57,11 +57,20 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=NRW_BASE_URL, request_delay=request_delay)
+        super().__init__(
+            base_url=NRW_BASE_URL, request_delay=request_delay, proxy=proxy
+        )
         self.court_type = court_type or ""
         self.date_from = date_from or ""
-        self.date_to = date_to or ""
+        # NRWE advanced search requires both von and bis — default bis to today
+        if date_from and not date_to:
+            from datetime import date
+
+            self.date_to = date.today().isoformat()
+        else:
+            self.date_to = date_to or ""
         self.limit = limit
 
     @staticmethod

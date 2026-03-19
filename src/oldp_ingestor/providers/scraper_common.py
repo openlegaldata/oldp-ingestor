@@ -67,7 +67,11 @@ class ScraperBaseClient(HttpBaseClient):
             return None
         for fn in zip_file.namelist():
             if fn.endswith(".xml"):
-                return zip_file.read(fn).decode(encoding)
+                try:
+                    return zip_file.read(fn).decode(encoding)
+                except zipfile.BadZipFile:
+                    logger.warning("Bad CRC in ZIP file %s entry %s", url_or_path, fn)
+                    return None
         logger.warning("ZIP from %s contains no XML files", url_or_path)
         return None
 

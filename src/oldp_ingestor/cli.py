@@ -256,6 +256,7 @@ def _make_law_provider(args) -> LawProvider:
             date_from=args.date_from,
             date_to=args.date_to,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     logger.error("Unknown provider '%s'", args.provider)
@@ -496,6 +497,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "rii":
@@ -507,6 +509,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "by":
@@ -517,6 +520,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "nrw":
@@ -527,6 +531,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "ns":
@@ -537,6 +542,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "eu":
@@ -550,6 +556,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "hb":
@@ -561,6 +568,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "sn-ovg":
@@ -571,6 +579,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "sn":
@@ -582,6 +591,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "sn-verfgh":
@@ -592,6 +602,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider in _JURIS_PROVIDERS:
@@ -604,6 +615,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     logger.error("Unknown provider '%s'", args.provider)
@@ -707,6 +719,12 @@ def main():
     parser.add_argument(
         "--output-dir",
         help="Output directory for json-file sink",
+    )
+    parser.add_argument(
+        "--proxy",
+        default=None,
+        help="SOCKS5/HTTP proxy URL for provider requests (e.g. socks5h://localhost:1080). "
+        "Not applied to the OLDP API sink.",
     )
     subparsers = parser.add_subparsers(dest="command")
 

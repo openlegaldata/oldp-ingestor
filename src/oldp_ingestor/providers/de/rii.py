@@ -84,9 +84,10 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
         ScraperBaseClient.__init__(
-            self, base_url=RII_BASE_URL, request_delay=request_delay
+            self, base_url=RII_BASE_URL, request_delay=request_delay, proxy=proxy
         )
         # Initialize Playwright attributes (used when date filtering)
         self.headless = True
