@@ -5889,6 +5889,8 @@ def test_rii_submit_date_search(monkeypatch):
             calls.setdefault("types", []).append(val)
 
     class FakePage:
+        url = "https://www.rechtsprechung-im-internet.de/jportal/portal/t/abc1/page/bsjrsprod.psml"
+
         def goto(self, url, timeout=None):
             calls["goto"] = url
 
@@ -5900,6 +5902,9 @@ def test_rii_submit_date_search(monkeypatch):
 
         def wait_for_selector(self, selector, timeout=None):
             pass
+
+        def evaluate(self, script):
+            calls.setdefault("evaluates", []).append(script)
 
         def content(self):
             return '<a href="?doc.id=jb-TEST001&x=1">Link</a><a href="?doc.id=jb-TEST002&x=1">Link2</a>'
@@ -5922,6 +5927,11 @@ def test_rii_submit_date_search(monkeypatch):
     ids = provider._submit_date_search()
 
     assert sorted(ids) == ["jb-TEST001", "jb-TEST002"]
+    assert provider._session_token == "abc1"
+    # Verify JS evaluate was used (not fill/type) for date fields
+    assert len(calls.get("evaluates", [])) == 2
+    assert "01.01.2025" in calls["evaluates"][0]
+    assert "30.06.2025" in calls["evaluates"][1]
     assert provider._date_search_submitted is True
     assert calls.get("page_closed") is True
 
@@ -6037,6 +6047,61 @@ def test_rii_fetch_and_parse_cases_limit(monkeypatch):
     assert len(cases) == 1
 
 
+def test_rii_fetch_and_parse_cases_date_filter(monkeypatch):
+    """_fetch_and_parse_cases skips cases outside date range to save memory."""
+    import io
+    import zipfile
+
+    from oldp_ingestor.providers.de.rii import RiiCaseProvider
+
+    def make_xml(date_str):
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+        <dokument>
+            <gertyp>BGH</gertyp>
+            <entsch-datum>{date_str}</entsch-datum>
+            <aktenzeichen>1 ZR 99/24</aktenzeichen>
+            <tenor><p>Decision text</p></tenor>
+            <accessRights>public</accessRights>
+        </dokument>"""
+
+    # Two docs: one in range (2024-06-01), one out of range (2020-01-15)
+    zips = {}
+    for doc_id, date in [("IN_RANGE", "20240601"), ("OUT_RANGE", "20200115")]:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(f"{doc_id}.xml", make_xml(date))
+        zips[doc_id] = buf.getvalue()
+
+    def fake_request(self, method, url, **kwargs):
+        doc_id = "IN_RANGE" if "IN_RANGE" in url else "OUT_RANGE"
+        data = zips[doc_id]
+
+        class FakeResp:
+            status_code = 200
+
+            class raw:
+                decode_content = True
+
+                @staticmethod
+                def read():
+                    return data
+
+            def raise_for_status(self):
+                pass
+
+        return FakeResp()
+
+    monkeypatch.setattr(RiiCaseProvider, "_request_with_retry", fake_request)
+
+    provider = RiiCaseProvider(
+        date_from="2024-01-01", date_to="2024-12-31", request_delay=0
+    )
+    cases = []
+    provider._fetch_and_parse_cases(["IN_RANGE", "OUT_RANGE"], cases)
+    assert len(cases) == 1
+    assert cases[0]["date"] == "2024-06-01"
+
+
 def test_rii_fetch_and_parse_cases_zip_error(monkeypatch):
     """_fetch_and_parse_cases skips docs when ZIP download fails."""
     import requests
@@ -6084,89 +6149,92 @@ def test_rii_fetch_and_parse_cases_parse_error(monkeypatch):
 
 
 def test_rii_get_cases_with_dates(monkeypatch):
-    """_get_cases_with_dates orchestrates date search + pagination."""
+    """_get_cases_with_dates uses HTTP GET with server-side date filtering."""
     from oldp_ingestor.providers.de.rii import RiiCaseProvider
 
-    page_calls = [0]
+    call_count = [0]
 
-    def mock_submit_date_search(self):
-        return ["DOC1"]
+    def mock_get(self, url, **kwargs):
+        call_count[0] += 1
+
+        class FakeResp:
+            status_code = 200
+
+            @property
+            def text(self_):
+                if call_count[0] == 1:
+                    return '<a href="?doc.id=DOC1&x=1">L</a><a href="?doc.id=DOC2&x=1">L</a>'
+                return ""  # empty page → stop
+
+        return FakeResp()
 
     def mock_fetch_and_parse(self, ids, cases):
         for doc_id in ids:
             cases.append({"court_name": "BGH", "file_number": doc_id})
         return False
 
-    def mock_get_date_search_page(self, page_num):
-        page_calls[0] += 1
-        if page_calls[0] == 1:
-            return ["DOC2"]
-        return []  # empty to trigger stop
-
-    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", mock_submit_date_search)
+    monkeypatch.setattr(RiiCaseProvider, "_get", mock_get)
     monkeypatch.setattr(RiiCaseProvider, "_fetch_and_parse_cases", mock_fetch_and_parse)
-    monkeypatch.setattr(
-        RiiCaseProvider, "_get_date_search_page", mock_get_date_search_page
-    )
-    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
 
     provider = RiiCaseProvider(
         date_from="2025-01-01", date_to="2025-06-30", request_delay=0
     )
     cases = provider._get_cases_with_dates()
     assert len(cases) == 2
-    assert cases[0]["file_number"] == "DOC1"
-    assert cases[1]["file_number"] == "DOC2"
+    assert {c["file_number"] for c in cases} == {"DOC1", "DOC2"}
 
 
 def test_rii_get_cases_with_dates_empty_first_page(monkeypatch):
-    """_get_cases_with_dates returns empty when first search has no IDs."""
+    """_get_cases_with_dates returns empty when search has no results."""
     from oldp_ingestor.providers.de.rii import RiiCaseProvider
 
-    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", lambda self: [])
-    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
+    def mock_get(self, url, **kwargs):
+        class FakeResp:
+            status_code = 200
+            text = "<html>no results</html>"
+
+        return FakeResp()
+
+    monkeypatch.setattr(RiiCaseProvider, "_get", mock_get)
 
     provider = RiiCaseProvider(date_from="2025-01-01", request_delay=0)
     cases = provider._get_cases_with_dates()
     assert cases == []
 
 
-def test_rii_get_cases_with_dates_limit_on_first_page(monkeypatch):
-    """_get_cases_with_dates stops when limit is reached on first page."""
+def test_rii_get_cases_with_dates_limit(monkeypatch):
+    """_get_cases_with_dates stops when limit is reached."""
     from oldp_ingestor.providers.de.rii import RiiCaseProvider
 
-    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", lambda self: ["DOC1"])
+    def mock_get(self, url, **kwargs):
+        class FakeResp:
+            status_code = 200
+            text = '<a href="?doc.id=DOC1&x=1">L</a>'
+
+        return FakeResp()
 
     def mock_fetch_and_parse(self, ids, cases):
         cases.append({"court_name": "BGH"})
         return True  # limit reached
 
+    monkeypatch.setattr(RiiCaseProvider, "_get", mock_get)
     monkeypatch.setattr(RiiCaseProvider, "_fetch_and_parse_cases", mock_fetch_and_parse)
-    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
 
     provider = RiiCaseProvider(date_from="2025-01-01", limit=1, request_delay=0)
     cases = provider._get_cases_with_dates()
     assert len(cases) == 1
 
 
-def test_rii_get_cases_with_dates_page_error(monkeypatch):
-    """_get_cases_with_dates handles errors on subsequent pages gracefully."""
+def test_rii_get_cases_with_dates_http_error(monkeypatch):
+    """_get_cases_with_dates handles HTTP errors gracefully."""
+    import requests as req
+
     from oldp_ingestor.providers.de.rii import RiiCaseProvider
 
-    monkeypatch.setattr(RiiCaseProvider, "_submit_date_search", lambda self: ["DOC1"])
-    monkeypatch.setattr(
-        RiiCaseProvider,
-        "_fetch_and_parse_cases",
-        lambda self, ids, cases: False,
-    )
+    def mock_get(self, url, **kwargs):
+        raise req.ConnectionError("network error")
 
-    def mock_get_date_search_page(self, page_num):
-        raise RuntimeError("page failed")
-
-    monkeypatch.setattr(
-        RiiCaseProvider, "_get_date_search_page", mock_get_date_search_page
-    )
-    monkeypatch.setattr(RiiCaseProvider, "close", lambda self: None)
+    monkeypatch.setattr(RiiCaseProvider, "_get", mock_get)
 
     provider = RiiCaseProvider(date_from="2025-01-01", request_delay=0)
     cases = provider._get_cases_with_dates()
@@ -6597,6 +6665,8 @@ def test_rii_submit_date_search_timeout_warning(monkeypatch):
             pass
 
     class FakePage:
+        url = "https://example.com/jportal/portal/t/tmout/page/bsjrsprod.psml"
+
         def goto(self, url, timeout=None):
             pass
 
@@ -6610,6 +6680,9 @@ def test_rii_submit_date_search_timeout_warning(monkeypatch):
             # Simulate timeout on the result wait
             if "resultList" in selector:
                 raise TimeoutError("timeout waiting for results")
+
+        def evaluate(self, script):
+            pass
 
         def content(self):
             return '<a href="?doc.id=TIMEOUT001&x=1">Link</a>'

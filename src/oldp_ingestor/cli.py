@@ -510,6 +510,7 @@ def _make_case_provider(args) -> CaseProvider:
             limit=args.limit,
             request_delay=args.request_delay,
             proxy=args.proxy,
+            cache_dir=getattr(args, "cache_dir", None),
         )
 
     if args.provider == "by":
@@ -833,6 +834,11 @@ def main():
         type=float,
         default=0.0,
         help="Delay in seconds between OLDP API write requests (default: 0.0)",
+    )
+    cases_parser.add_argument(
+        "--cache-dir",
+        help="Directory to cache downloaded XMLs (currently RII only). "
+        "Enables resume on interrupted runs.",
     )
 
     status_parser = subparsers.add_parser(

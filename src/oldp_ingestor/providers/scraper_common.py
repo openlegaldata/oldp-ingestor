@@ -59,7 +59,11 @@ class ScraperBaseClient(HttpBaseClient):
         """
         resp = self._get(url_or_path, stream=True)
         resp.raw.decode_content = True
-        zip_bytes = io.BytesIO(resp.raw.read())
+        try:
+            zip_bytes = io.BytesIO(resp.raw.read())
+        except Exception as exc:
+            logger.warning("Failed to download ZIP from %s: %s", url_or_path, exc)
+            return None
         try:
             zip_file = zipfile.ZipFile(zip_bytes)
         except zipfile.BadZipFile:
