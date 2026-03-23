@@ -617,6 +617,7 @@ def _make_case_provider(args) -> CaseProvider:
             limit=args.limit,
             request_delay=args.request_delay,
             proxy=args.proxy,
+            cache_dir=getattr(args, "cache_dir", None),
         )
 
     logger.error("Unknown provider '%s'", args.provider)

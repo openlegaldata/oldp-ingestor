@@ -3812,10 +3812,13 @@ def test_ns_date_filter_missing_date(monkeypatch):
 
 
 def test_juris_date_filter_from(monkeypatch):
-    """Juris provider excludes cases before date_from."""
+    """Juris provider excludes cases before date_from via client-side filter."""
     from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
-    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
+    def mock_date_search(self):
+        # Single page with one case dated 2024-05-01 — before date_from
+        yield ["JDOC001"], ["2024-05-01"]
+
     detail_html = """<html><body><table>
         <tr><td class="TD30"><strong>Gericht:</strong></td>
         <td class="TD70">AG Berlin</td></tr>
@@ -3827,14 +3830,9 @@ def test_juris_date_filter_from(monkeypatch):
     <div class="docLayoutText"><p>This is the decision content.</p></div>
     </body></html>"""
 
-    page_call_count = [0]
+    monkeypatch.setattr(BbBeCaseProvider, "_submit_search_with_dates", mock_date_search)
 
     def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
-        page_call_count[0] += 1
-        if "Suchportlet" in url:
-            if page_call_count[0] <= 1:
-                return search_result_html
-            return "<html><body>empty</body></html>"
         return detail_html
 
     monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
@@ -3842,14 +3840,17 @@ def test_juris_date_filter_from(monkeypatch):
 
     provider = BbBeCaseProvider(date_from="2025-01-01", limit=10, request_delay=0)
     cases = provider.get_cases()
-    assert len(cases) == 0  # 2024-05-01 excluded
+    assert len(cases) == 0  # 2024-05-01 excluded by early-stop (date < date_from)
 
 
 def test_juris_date_filter_to(monkeypatch):
-    """Juris provider excludes cases after date_to."""
+    """Juris provider excludes cases after date_to via client-side filter."""
     from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
-    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
+    def mock_date_search(self):
+        # Single page with one case dated 2026-05-01 — after date_to
+        yield ["JDOC001"], ["2026-05-01"]
+
     detail_html = """<html><body><table>
         <tr><td class="TD30"><strong>Gericht:</strong></td>
         <td class="TD70">AG Berlin</td></tr>
@@ -3861,14 +3862,9 @@ def test_juris_date_filter_to(monkeypatch):
     <div class="docLayoutText"><p>This is the decision content.</p></div>
     </body></html>"""
 
-    page_call_count = [0]
+    monkeypatch.setattr(BbBeCaseProvider, "_submit_search_with_dates", mock_date_search)
 
     def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
-        page_call_count[0] += 1
-        if "Suchportlet" in url:
-            if page_call_count[0] <= 1:
-                return search_result_html
-            return "<html><body>empty</body></html>"
         return detail_html
 
     monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
@@ -3876,14 +3872,13 @@ def test_juris_date_filter_to(monkeypatch):
 
     provider = BbBeCaseProvider(date_to="2025-12-31", limit=10, request_delay=0)
     cases = provider.get_cases()
-    assert len(cases) == 0  # 2026-05-01 excluded
+    assert len(cases) == 0  # 2026-05-01 excluded by client-side date filter
 
 
 def test_juris_date_filter_range(monkeypatch):
-    """Juris provider uses extended search form when dates are set."""
+    """Juris provider uses extended search generator when dates are set."""
     from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
-    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
     detail_html = """<html><body><table>
         <tr><td class="TD30"><strong>Gericht:</strong></td>
         <td class="TD70">AG Berlin</td></tr>
@@ -3897,22 +3892,14 @@ def test_juris_date_filter_range(monkeypatch):
 
     submit_called = [False]
 
-    def mock_submit_search_with_dates(self):
+    def mock_date_search(self):
         submit_called[0] = True
-        return search_result_html
-
-    page_call_count = [0]
+        yield ["JDOC001"], ["2025-06-15"]
 
     def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
-        page_call_count[0] += 1
-        if "Suchportlet" in url:
-            # Page 2+ returns empty (only 1 result from date search)
-            return "<html><body>empty</body></html>"
         return detail_html
 
-    monkeypatch.setattr(
-        BbBeCaseProvider, "_submit_search_with_dates", mock_submit_search_with_dates
-    )
+    monkeypatch.setattr(BbBeCaseProvider, "_submit_search_with_dates", mock_date_search)
     monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
     monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
 
@@ -6334,6 +6321,9 @@ def test_juris_submit_search_with_dates(monkeypatch):
         def wait_for(self, timeout=None):
             pass
 
+        def count(self):
+            return 0  # no next button → stop pagination
+
     class FakePage:
         def goto(self, url, timeout=None):
             calls["goto_url"] = url
@@ -6365,9 +6355,11 @@ def test_juris_submit_search_with_dates(monkeypatch):
     provider = BbBeCaseProvider(
         date_from="2025-01-01", date_to="2025-06-30", request_delay=0
     )
-    html = provider._submit_search_with_dates()
+    pages = list(provider._submit_search_with_dates())
 
-    assert "DATETEST01" in html
+    assert len(pages) >= 1
+    ids, dates = pages[0]
+    assert "DATETEST01" in ids
     assert provider._search_submitted is True
     assert calls.get("page_closed") is True
     # Check that date fills happened
@@ -6382,7 +6374,6 @@ def test_juris_get_cases_date_branch_page1(monkeypatch):
 
     submit_called = [False]
 
-    search_result_html = '<a href="/bsbe/document/JDOC001/format/xsl">Link</a>'
     detail_html = """<html><body><table>
         <tr><td class="TD30"><strong>Gericht:</strong></td>
         <td class="TD70">AG Berlin</td></tr>
@@ -6394,21 +6385,14 @@ def test_juris_get_cases_date_branch_page1(monkeypatch):
     <div class="docLayoutText"><p>This is the decision content.</p></div>
     </body></html>"""
 
-    def mock_submit_search_with_dates(self):
+    def mock_date_search(self):
         submit_called[0] = True
-        return search_result_html
-
-    page_call_count = [0]
+        yield ["JDOC001"], ["2025-06-15"]
 
     def mock_get_page_html(self, url, wait_selector=None, timeout=30000):
-        page_call_count[0] += 1
-        if "Suchportlet" in url:
-            return "<html><body>empty</body></html>"
         return detail_html
 
-    monkeypatch.setattr(
-        BbBeCaseProvider, "_submit_search_with_dates", mock_submit_search_with_dates
-    )
+    monkeypatch.setattr(BbBeCaseProvider, "_submit_search_with_dates", mock_date_search)
     monkeypatch.setattr(BbBeCaseProvider, "_get_page_html", mock_get_page_html)
     monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
 
@@ -6424,7 +6408,7 @@ def test_juris_get_cases_date_branch_page1(monkeypatch):
 
 
 def test_juris_get_cases_date_branch_submit_error(monkeypatch):
-    """get_cases handles _submit_search_with_dates failure gracefully."""
+    """get_cases raises when _submit_search_with_dates fails (no silent fallback)."""
     from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
     def mock_submit_search_with_dates(self):
@@ -6436,8 +6420,8 @@ def test_juris_get_cases_date_branch_submit_error(monkeypatch):
     monkeypatch.setattr(BbBeCaseProvider, "close", lambda self: None)
 
     provider = BbBeCaseProvider(date_from="2025-01-01", limit=10, request_delay=0)
-    cases = provider.get_cases()
-    assert cases == []
+    with pytest.raises(RuntimeError, match="Playwright crashed"):
+        provider.get_cases()
 
 
 # ===================================================================
@@ -6720,7 +6704,7 @@ def test_juris_search_url_after_submit():
 
 
 def test_juris_submit_search_extended_search_failure(monkeypatch):
-    """_submit_search_with_dates handles extended search open failure."""
+    """_submit_search_with_dates raises on failure (no silent fallback)."""
     from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
     class FakeLocator:
@@ -6766,7 +6750,5 @@ def test_juris_submit_search_extended_search_failure(monkeypatch):
     monkeypatch.setattr(BbBeCaseProvider, "_ensure_browser", mock_ensure_browser)
 
     provider = BbBeCaseProvider(date_from="2025-01-01", request_delay=0)
-    html = provider._submit_search_with_dates()
-
-    # Should return page content even on failure
-    assert "fallback content" in html
+    with pytest.raises(TimeoutError):
+        list(provider._submit_search_with_dates())
