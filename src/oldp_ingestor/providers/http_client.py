@@ -1,14 +1,42 @@
 """Generic HTTP client with retry, pacing, and session management."""
 
 import logging
+import subprocess
 import time
+from importlib.metadata import version
 
 import requests
 from requests import Response
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "oldp-ingestor/0.1.3 (+https://github.com/openlegaldata)"
+
+def _build_user_agent() -> str:
+    """Build user agent string from package version and git commit hash."""
+    try:
+        ver = version("oldp-ingestor")
+    except Exception:
+        ver = "0.0.0"
+    try:
+        commit = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            .decode()
+            .strip()
+        )
+    except Exception:
+        commit = ""
+    ua = f"oldp-ingestor/{ver}"
+    if commit:
+        ua += f"+{commit}"
+    ua += " (+https://github.com/openlegaldata)"
+    return ua
+
+
+USER_AGENT = _build_user_agent()
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 1  # seconds
 

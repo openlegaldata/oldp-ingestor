@@ -62,9 +62,9 @@ class PlaywrightBaseClient:
                     "--js-flags=--max-old-space-size=128",
                 ],
             )
-            context_kwargs: dict = {
-                "user_agent": "oldp-ingestor/0.1.3 (+https://github.com/openlegaldata)"
-            }
+            from oldp_ingestor.providers.http_client import USER_AGENT
+
+            context_kwargs: dict = {"user_agent": USER_AGENT}
             if self.proxy:
                 # Chromium doesn't support socks5h:// — normalise to socks5://
                 playwright_proxy = self.proxy.replace("socks5h://", "socks5://")
