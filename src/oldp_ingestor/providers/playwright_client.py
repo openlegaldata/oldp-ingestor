@@ -63,7 +63,7 @@ class PlaywrightBaseClient:
                 ],
             )
             context_kwargs: dict = {
-                "user_agent": "oldp-ingestor/0.1.2 (+https://github.com/openlegaldata)"
+                "user_agent": "oldp-ingestor/0.1.3 (+https://github.com/openlegaldata)"
             }
             if self.proxy:
                 # Chromium doesn't support socks5h:// — normalise to socks5://
