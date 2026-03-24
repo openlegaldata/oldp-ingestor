@@ -68,6 +68,19 @@ oldp-ingestor -v cases --provider rii --limit 10
 bash dev-deployment/ingest.sh cases rii
 ```
 
+## Date Filtering
+
+Date filtering is server-side via the Playwright extended search form. When
+`--date-from` / `--date-to` CLI flags are provided, the provider:
+
+1. Opens the search page with Playwright
+2. Clicks "Entscheidungssuche", then "Erweiterte Suche" to reveal date fields
+3. Fills `#dateFrom` / `#dateTo` inputs (DD.MM.YYYY format, converted from ISO)
+4. Submits the form — the portal returns only matching results
+
+When no dates are set, falls back to the fast HTTP-only per-court listing
+(no Playwright needed).
+
 ## Known Quirks
 
 - **Access filtering**: Non-public documents (`accessRights != "public"`) are

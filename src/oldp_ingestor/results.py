@@ -17,6 +17,7 @@ def write_result(
     skipped,
     errors,
     status=None,
+    invalid=0,
 ):
     """Write a JSON result file atomically via tmp+rename.
 
@@ -47,6 +48,7 @@ def write_result(
         "status": status,
         "created": created,
         "skipped": skipped,
+        "invalid": invalid,
         "errors": errors,
     }
 

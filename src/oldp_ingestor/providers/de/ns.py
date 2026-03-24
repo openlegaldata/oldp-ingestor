@@ -27,9 +27,12 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
     Uses GET-based search with query parameters. The site is a Drupal 11
     SSR application (no JavaScript rendering needed).
 
+    Supports server-side date filtering via `date` and `end_date_range`
+    GET parameters (YYYY-MM-DD format).
+
     Args:
-        date_from: Optional start date filter (YYYY-MM-DD, not used in search URL yet).
-        date_to: Optional end date filter (YYYY-MM-DD, not used in search URL yet).
+        date_from: Optional start date filter (YYYY-MM-DD).
+        date_to: Optional end date filter (YYYY-MM-DD).
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -45,8 +48,9 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=NS_BASE_URL, request_delay=request_delay)
+        super().__init__(base_url=NS_BASE_URL, request_delay=request_delay, proxy=proxy)
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit
@@ -55,12 +59,18 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
         """GET search page and extract document UUIDs from results.
 
         Returns list of document paths like '/browse/document/<uuid>'.
+        Passes date/end_date_range params for server-side date filtering.
         """
         params = {
             "query": "*",
             "publicationtype": "publicationform-ats-filter!ATS_Rechtsprechung",
+            "sort_order": "date_desc",
             "page": str(page),
         }
+        if self.date_from:
+            params["date"] = self.date_from
+        if self.date_to:
+            params["end_date_range"] = self.date_to
 
         resp = self._get(NS_SEARCH_PATH, params=params)
 
@@ -180,6 +190,8 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
                     continue
 
                 if case is not None:
+                    if not self._is_within_date_range(case.get("date", "")):
+                        continue
                     cases.append(case)
 
                 if self.limit and len(cases) >= self.limit:

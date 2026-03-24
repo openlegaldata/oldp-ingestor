@@ -107,6 +107,18 @@ bash dev-deployment/ingest.sh cases juris-bw
 # ... etc. for each state
 ```
 
+## Date Filtering
+
+Date filtering is server-side via Playwright extended search form. When
+`--date-from` / `--date-to` CLI flags are provided, the provider:
+
+1. Navigates to the portal search page
+2. Clicks "Erweiterte Suche" (`span.extended-search__label`) to reveal date fields
+3. Fills `#DatumInputFrom` / `#DatumInputTo` with DD.MM.YYYY values (converted from ISO)
+4. Submits the search form — the portal returns only matching results
+
+All 10 state subclasses inherit this behavior from `JurisCaseProvider`.
+
 ## Known Quirks
 
 - **Playwright required**: The portal is a React SPA that requires JavaScript

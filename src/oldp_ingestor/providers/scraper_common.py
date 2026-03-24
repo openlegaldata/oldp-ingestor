@@ -59,7 +59,11 @@ class ScraperBaseClient(HttpBaseClient):
         """
         resp = self._get(url_or_path, stream=True)
         resp.raw.decode_content = True
-        zip_bytes = io.BytesIO(resp.raw.read())
+        try:
+            zip_bytes = io.BytesIO(resp.raw.read())
+        except Exception as exc:
+            logger.warning("Failed to download ZIP from %s: %s", url_or_path, exc)
+            return None
         try:
             zip_file = zipfile.ZipFile(zip_bytes)
         except zipfile.BadZipFile:
@@ -67,7 +71,11 @@ class ScraperBaseClient(HttpBaseClient):
             return None
         for fn in zip_file.namelist():
             if fn.endswith(".xml"):
-                return zip_file.read(fn).decode(encoding)
+                try:
+                    return zip_file.read(fn).decode(encoding)
+                except zipfile.BadZipFile:
+                    logger.warning("Bad CRC in ZIP file %s entry %s", url_or_path, fn)
+                    return None
         logger.warning("ZIP from %s contains no XML files", url_or_path)
         return None
 

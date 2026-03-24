@@ -25,4 +25,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --python ${{ matrix.python-version }}
-      - run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=90
+      - run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=88

@@ -26,9 +26,18 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
     (no server-side pagination). Document details and PDF links are
     fetched per document.
 
+    Supports server-side date filtering via the ``datum`` POST parameter
+    in year-only format (YYYY or YYYY-YYYY range). The portal does not
+    support day-level server-side filtering, so day-level precision is
+    applied client-side via ``_is_within_date_range``.
+
     Args:
         date_from: Only include decisions on or after this date (YYYY-MM-DD).
+            Year is extracted and sent as ``datum`` POST parameter for
+            server-side filtering. Day-level filtering applied client-side.
         date_to: Only include decisions on or before this date (YYYY-MM-DD).
+            Year is extracted and sent as ``datum`` POST parameter for
+            server-side filtering. Day-level filtering applied client-side.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -44,8 +53,11 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=SN_OVG_BASE_URL, request_delay=request_delay)
+        super().__init__(
+            base_url=SN_OVG_BASE_URL, request_delay=request_delay, proxy=proxy
+        )
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit
@@ -53,19 +65,21 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
     def _build_datum_param(self) -> str:
         """Build the datum form parameter for date range filtering.
 
-        The OVG search accepts dates in formats: DD.MM.YYYY, MM.YYYY, YYYY,
-        and ranges as 'FROM-TO' (e.g. '1.1.2025-31.12.2025').
+        The OVG search supports YYYY and YYYY-YYYY year ranges.
+        DD.MM.YYYY-DD.MM.YYYY ranges return 0 results (not supported).
         """
-        if self.date_from and self.date_to:
-            d_from = self._iso_to_german(self.date_from)
-            d_to = self._iso_to_german(self.date_to)
-            return f"{d_from}-{d_to}"
-        if self.date_from:
-            d_from = self._iso_to_german(self.date_from)
-            return f"{d_from}-31.12.2099"
-        if self.date_to:
-            d_to = self._iso_to_german(self.date_to)
-            return f"1.1.1990-{d_to}"
+        from_year = self.date_from[:4] if self.date_from else ""
+        to_year = self.date_to[:4] if self.date_to else ""
+
+        if from_year and to_year:
+            if from_year == to_year:
+                return from_year
+            return f"{from_year}-{to_year}"
+        if from_year:
+            # Just the year — the search interprets this as "from this year onwards"
+            return from_year
+        if to_year:
+            return f"1990-{to_year}"
         return ""
 
     @staticmethod
@@ -89,8 +103,14 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         resp = self._post("/searchlist.phtml", data=data)
         text = resp.text
 
-        # Extract IDs from popupDocument('ID') calls
-        ids = re.findall(r"popupDocument\('(\d+)'\)", text)
+        # Extract IDs from popupDocument('ID') calls — deduplicate preserving order
+        seen: set[str] = set()
+        ids: list[str] = []
+        for m in re.finditer(r"popupDocument\('(\d+)'\)", text):
+            doc_id = m.group(1)
+            if doc_id not in seen:
+                seen.add(doc_id)
+                ids.append(doc_id)
         return ids
 
     def _fetch_document(self, doc_id: str) -> dict | None:
@@ -197,9 +217,6 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
             return cases
 
         logger.info("Found %d document(s)", len(doc_ids))
-
-        if self.limit and len(doc_ids) > self.limit:
-            doc_ids = doc_ids[: self.limit]
 
         for doc_id in doc_ids:
             try:

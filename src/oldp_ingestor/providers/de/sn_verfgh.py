@@ -71,9 +71,16 @@ class SnVerfghCaseProvider(ScraperBaseClient, CaseProvider):
     Uses AJAX POST to /esaver/answers.php. All results are returned
     in a single response (no pagination). Content is PDF-only.
 
+    Supports server-side date filtering via AJAX search date parameters.
+    The ``datumvon`` and ``datumbis`` POST fields accept ISO 8601 dates
+    (YYYY-MM-DD). When set, the server returns only decisions within
+    the requested date range.
+
     Args:
         date_from: Only include decisions on or after this date (YYYY-MM-DD).
+            Sent as ``datumvon`` POST parameter for server-side filtering.
         date_to: Only include decisions on or before this date (YYYY-MM-DD).
+            Sent as ``datumbis`` POST parameter for server-side filtering.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -89,8 +96,11 @@ class SnVerfghCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=SN_VERFGH_BASE_URL, request_delay=request_delay)
+        super().__init__(
+            base_url=SN_VERFGH_BASE_URL, request_delay=request_delay, proxy=proxy
+        )
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit

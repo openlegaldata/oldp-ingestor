@@ -60,11 +60,19 @@ class BremenCaseProvider(ScraperBaseClient, CaseProvider):
     All five Bremen court portals use identical SixCMS HTML structure.
     Decisions are PDF-only; text is extracted via pymupdf.
 
+    Supports server-side date filtering via per-court portal date
+    parameters in the search URL. Client-side ``_is_within_date_range``
+    is used as a fallback to ensure precision.
+
     Args:
         court: Filter to single court key (olg, ovg, vg, lag, stgh).
             If None, all courts are scraped.
         date_from: Only include decisions on or after this date (YYYY-MM-DD).
+            Applied server-side via search URL parameters and client-side
+            via ``data-date`` row attribute comparison.
         date_to: Only include decisions on or before this date (YYYY-MM-DD).
+            Applied server-side via search URL parameters and client-side
+            via ``data-date`` row attribute comparison.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -81,9 +89,10 @@ class BremenCaseProvider(ScraperBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
         # base_url is set per court during scraping
-        super().__init__(base_url="", request_delay=request_delay)
+        super().__init__(base_url="", request_delay=request_delay, proxy=proxy)
         self.court = court
         self.date_from = date_from or ""
         self.date_to = date_to or ""

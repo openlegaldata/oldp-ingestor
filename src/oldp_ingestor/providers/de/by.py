@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 BY_BASE_URL = "https://www.gesetze-bayern.de"
 
+# Court name normalization: Bavaria XML uses short names like "VGH München"
+# that the OLDP court resolver can't match. Map to full names used in the DB.
+_COURT_NAME_MAP = {
+    "VGH München": "Bayerischer Verwaltungsgerichtshof",
+    "BayObLG München": "Bayerisches Oberstes Landesgericht",
+    "VerfGH München": "Bayerischer Verfassungsgerichtshof",
+}
+
 # Case type abbreviation expansion
 _TYPE_MAP = {
     "Bes": "Beschluss",
@@ -48,7 +56,17 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
     Uses session-based navigation with cookie state. Pages through
     search results, downloads ZIP/XML for each case.
 
+    Supports server-side date filtering via POST to ``/Search`` with
+    ``SearchFields.DatumVon`` / ``SearchFields.DatumBis`` form fields
+    (DD.MM.YYYY format). The POST also requires a
+    ``__RequestVerificationToken`` (ASP.NET CSRF token) extracted from
+    the search form HTML.
+
     Args:
+        date_from: Optional start date (YYYY-MM-DD). Sent as
+            ``SearchFields.DatumVon`` (DD.MM.YYYY) for server-side filtering.
+        date_to: Optional end date (YYYY-MM-DD). Sent as
+            ``SearchFields.DatumBis`` (DD.MM.YYYY) for server-side filtering.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
@@ -57,15 +75,65 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
 
     def __init__(
         self,
+        date_from: str | None = None,
+        date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.2,
+        proxy: str | None = None,
     ):
-        super().__init__(base_url=BY_BASE_URL, request_delay=request_delay)
+        super().__init__(base_url=BY_BASE_URL, request_delay=request_delay, proxy=proxy)
+        self.date_from = date_from or ""
+        self.date_to = date_to or ""
         self.limit = limit
 
+    @staticmethod
+    def _to_german_date(iso_date: str) -> str:
+        """Convert YYYY-MM-DD to DD.MM.YYYY."""
+        parts = iso_date.split("-")
+        if len(parts) == 3:
+            return f"{parts[2]}.{parts[1]}.{parts[0]}"
+        return iso_date
+
     def _init_search_session(self) -> None:
-        """Initialize session with search filter for court decisions."""
+        """Initialize session and submit search with optional date filter.
+
+        Sets the DOKTYP=rspr filter, then if dates are set, fetches the
+        search form to extract the CSRF token and POSTs with date fields.
+        """
         self._get("/Search/Filter/DOKTYP/rspr")
+
+        if not self.date_from and not self.date_to:
+            return
+
+        # Fetch search form to get CSRF token
+        import lxml.html
+
+        resp = self._get("/Search/Hitlist")
+        tree = lxml.html.fromstring(resp.text)
+        tokens = tree.xpath('//input[@name="__RequestVerificationToken"]/@value')
+        token = tokens[0] if tokens else ""
+
+        # Submit search with date fields
+        logger.info(
+            "Submitting BY search with dates: %s to %s",
+            self.date_from,
+            self.date_to,
+        )
+        self._post(
+            "/Search",
+            data={
+                "SearchFields.Content": "",
+                "SearchFields.DatumVon": (
+                    self._to_german_date(self.date_from) if self.date_from else ""
+                ),
+                "SearchFields.DatumBis": (
+                    self._to_german_date(self.date_to) if self.date_to else ""
+                ),
+                "SearchFields.Aktenzeichen": "",
+                "SearchFields.Norm": "",
+                "__RequestVerificationToken": token,
+            },
+        )
 
     def _get_ids_from_page(self, page: int) -> list[str]:
         """Fetch page and extract document IDs via regex."""
@@ -97,6 +165,7 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
             tree, "//metadaten/gericht/gerort", default=""
         )
         court_name = f"{court_type} {court_location}".strip()
+        court_name = _COURT_NAME_MAP.get(court_name, court_name)
 
         case_type_raw = self._xpath_text(tree, "//metadaten/doktyp", default="")
         case_type = _expand_case_type(case_type_raw)

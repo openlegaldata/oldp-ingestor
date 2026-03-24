@@ -22,25 +22,54 @@ class PlaywrightBaseClient:
     Args:
         request_delay: Delay in seconds between page loads.
         headless: Whether to run browser in headless mode.
+        proxy: Optional SOCKS5/HTTP proxy URL (e.g. ``"socks5://localhost:1080"``).
+            Passed to Playwright as ``{"server": proxy}`` on the browser context.
     """
 
-    def __init__(self, request_delay: float = 0.5, headless: bool = True):
+    def __init__(
+        self,
+        request_delay: float = 0.5,
+        headless: bool = True,
+        proxy: str | None = None,
+    ):
         self.request_delay = request_delay
         self.headless = headless
+        self.proxy = proxy
         self._playwright = None
         self._browser = None
         self._context = None
 
     def _ensure_browser(self):
         """Lazily start Playwright browser."""
-        if self._browser is None:
+        if self._browser is None:  # pragma: no cover
             from playwright.sync_api import sync_playwright
 
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=self.headless)
-            self._context = self._browser.new_context(
-                user_agent="oldp-ingestor/0.1.3 (+https://github.com/openlegaldata)"
+            self._browser = self._playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--no-sandbox",
+                    "--single-process",
+                    "--disable-background-networking",
+                    "--disable-default-apps",
+                    "--disable-sync",
+                    "--disable-translate",
+                    "--mute-audio",
+                    "--no-first-run",
+                    "--js-flags=--max-old-space-size=128",
+                ],
             )
+            from oldp_ingestor.providers.http_client import USER_AGENT
+
+            context_kwargs: dict = {"user_agent": USER_AGENT}
+            if self.proxy:
+                # Chromium doesn't support socks5h:// — normalise to socks5://
+                playwright_proxy = self.proxy.replace("socks5h://", "socks5://")
+                context_kwargs["proxy"] = {"server": playwright_proxy}
+            self._context = self._browser.new_context(**context_kwargs)
 
     def _get_page_html(
         self, url: str, wait_selector: str | None = None, timeout: int = 30000

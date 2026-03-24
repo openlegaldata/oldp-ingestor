@@ -15,6 +15,7 @@ from oldp_ingestor.court_analysis import (
     parse_missing_courts,
 )
 from oldp_ingestor.providers.base import CaseProvider, LawProvider
+from oldp_ingestor.validation import validate_case
 from oldp_ingestor.results import (
     check_health,
     format_status_table,
@@ -26,7 +27,15 @@ logger = logging.getLogger("oldp_ingestor")
 
 
 def _write_result_and_return(
-    args, command, provider_name, started_at, created, skipped, errors, status
+    args,
+    command,
+    provider_name,
+    started_at,
+    created,
+    skipped,
+    errors,
+    status,
+    invalid=0,
 ):
     """Write result file (if configured) and return the appropriate exit code."""
     finished_at = datetime.now(timezone.utc)
@@ -40,12 +49,35 @@ def _write_result_and_return(
             finished_at,
             created=created,
             skipped=skipped,
+            invalid=invalid,
             errors=errors,
             status=status,
         )
     if status == "error":
         return 2
     return 1 if errors > 0 else 0
+
+
+def _save_failed_cases(results_dir, provider, failed_cases):
+    """Save failed cases to a JSON file for later replay."""
+    os.makedirs(results_dir, exist_ok=True)
+    path = os.path.join(results_dir, f"failed_{provider}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(failed_cases, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    logger.info(
+        "Saved %d failed case(s) to %s — fix courts/aliases then replay with: "
+        "oldp-ingestor replay --input %s",
+        len(failed_cases),
+        path,
+        path,
+    )
+
+
+def _load_failed_cases(path):
+    """Load failed cases from a JSON file."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def cmd_info(args):
@@ -67,7 +99,8 @@ def _make_sink(args):
 
     from oldp_ingestor.sinks.api import ApiSink
 
-    client = OLDPClient.from_settings()
+    write_delay = getattr(args, "write_delay", 0.0) or 0.0
+    client = OLDPClient.from_settings(write_delay=write_delay)
     return ApiSink(client)
 
 
@@ -223,6 +256,7 @@ def _make_law_provider(args) -> LawProvider:
             date_from=args.date_from,
             date_to=args.date_to,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     logger.error("Unknown provider '%s'", args.provider)
@@ -248,6 +282,8 @@ def cmd_cases(args):
 
         cases_created = 0
         cases_skipped = 0
+        cases_invalid = 0
+        failed_cases: list[dict] = []
 
         for case in cases:
             case_label = case.get("file_number", "?")
@@ -265,6 +301,16 @@ def cmd_cases(args):
                     case[field] = case[field][:max_len]
             # Remove None values (API rejects null for optional fields)
             case = {k: v for k, v in case.items() if v is not None}
+
+            # Validate before sending to API
+            validation_error = validate_case(case)
+            if validation_error:
+                cases_invalid += 1
+                logger.warning(
+                    "Skipped invalid case %s: %s", case_label, validation_error
+                )
+                continue
+
             # Inject source from provider
             if provider.SOURCE.get("name"):
                 case["source"] = provider.SOURCE
@@ -285,11 +331,17 @@ def cmd_cases(args):
                         except (ValueError, AttributeError):
                             detail = f" - {e.response.text[:200]}"
                     logger.error("Error creating case %s: %s%s", case_label, e, detail)
+                    failed_cases.append({"case": case, "error": str(e) + detail})
+
+        # Save failed cases to file for later replay
+        if failed_cases and args.results_dir:
+            _save_failed_cases(args.results_dir, args.provider, failed_cases)
 
         logger.info(
-            "Summary: cases created=%d skipped=%d errors=%d",
+            "Summary: cases created=%d skipped=%d invalid=%d errors=%d",
             cases_created,
             cases_skipped,
+            cases_invalid,
             cases_errors,
         )
 
@@ -303,6 +355,7 @@ def cmd_cases(args):
             started_at,
             created=cases_created,
             skipped=cases_skipped,
+            invalid=cases_invalid,
             errors=cases_errors,
             status=status,
         )
@@ -319,6 +372,88 @@ def cmd_cases(args):
             errors=1,
             status="error",
         )
+
+
+def cmd_replay(args):
+    """Replay failed cases from a saved JSON file.
+
+    After fixing court aliases or other issues, re-submit previously
+    failed cases without re-scraping the source websites.
+    """
+    started_at = datetime.now(timezone.utc)
+    status = "ok"
+
+    try:
+        sink = _make_sink(args)
+        failed_entries = _load_failed_cases(args.input)
+        logger.info("Loaded %d failed case(s) from %s", len(failed_entries), args.input)
+
+        created = 0
+        skipped = 0
+        errors = 0
+        still_failed: list[dict] = []
+
+        for entry in failed_entries:
+            case = entry["case"]
+            case_label = case.get("file_number", "?")
+            try:
+                sink.write_case(case)
+                created += 1
+                logger.info("Replayed case: %s", case_label)
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 409:
+                    skipped += 1
+                    logger.debug("Skipped (already exists): %s", case_label)
+                else:
+                    errors += 1
+                    detail = ""
+                    if e.response is not None:
+                        try:
+                            detail = f" - {e.response.json()}"
+                        except (ValueError, AttributeError):
+                            detail = f" - {e.response.text[:200]}"
+                    logger.error("Still failing: %s: %s%s", case_label, e, detail)
+                    still_failed.append({"case": case, "error": str(e) + detail})
+
+        # Overwrite the failed file with remaining failures (or delete if empty)
+        if still_failed:
+            with open(args.input, "w", encoding="utf-8") as f:
+                json.dump(still_failed, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            logger.info(
+                "%d case(s) still failing — saved to %s", len(still_failed), args.input
+            )
+        else:
+            os.remove(args.input)
+            logger.info("All cases replayed successfully — removed %s", args.input)
+
+        logger.info(
+            "Replay summary: created=%d skipped=%d errors=%d", created, skipped, errors
+        )
+
+        if errors > 0:
+            status = "partial"
+
+        results_dir = getattr(args, "results_dir", None)
+        if results_dir:
+            finished_at = datetime.now(timezone.utc)
+            write_result(
+                results_dir,
+                "replay",
+                os.path.basename(args.input),
+                started_at,
+                finished_at,
+                created=created,
+                skipped=skipped,
+                errors=errors,
+                status=status,
+            )
+
+        return 1 if errors > 0 else 0
+
+    except Exception:
+        logger.exception("Fatal error in replay command")
+        return 2
 
 
 _JURIS_PROVIDERS = {
@@ -362,6 +497,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "rii":
@@ -369,16 +505,23 @@ def _make_case_provider(args) -> CaseProvider:
 
         return RiiCaseProvider(
             court=args.court,
+            date_from=args.date_from,
+            date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
+            cache_dir=getattr(args, "cache_dir", None),
         )
 
     if args.provider == "by":
         from oldp_ingestor.providers.de.by import ByCaseProvider
 
         return ByCaseProvider(
+            date_from=args.date_from,
+            date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "nrw":
@@ -389,6 +532,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "ns":
@@ -399,6 +543,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "eu":
@@ -412,6 +557,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "hb":
@@ -423,6 +569,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "sn-ovg":
@@ -433,6 +580,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "sn":
@@ -444,6 +592,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider == "sn-verfgh":
@@ -454,6 +603,7 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
         )
 
     if args.provider in _JURIS_PROVIDERS:
@@ -466,6 +616,8 @@ def _make_case_provider(args) -> CaseProvider:
             date_to=args.date_to,
             limit=args.limit,
             request_delay=args.request_delay,
+            proxy=args.proxy,
+            cache_dir=getattr(args, "cache_dir", None),
         )
 
     logger.error("Unknown provider '%s'", args.provider)
@@ -570,6 +722,12 @@ def main():
         "--output-dir",
         help="Output directory for json-file sink",
     )
+    parser.add_argument(
+        "--proxy",
+        default=None,
+        help="SOCKS5/HTTP proxy URL for provider requests (e.g. socks5h://localhost:1080). "
+        "Not applied to the OLDP API sink.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("info", help="Show API info from the OLDP instance")
@@ -607,6 +765,12 @@ def main():
         type=float,
         default=0.2,
         help="Delay in seconds between API requests (default: 0.2, i.e. max ~300 req/min)",
+    )
+    laws_parser.add_argument(
+        "--write-delay",
+        type=float,
+        default=0.0,
+        help="Delay in seconds between OLDP API write requests (default: 0.0)",
     )
 
     cases_parser = subparsers.add_parser("cases", help="Ingest cases into OLDP")
@@ -666,6 +830,17 @@ def main():
         default=0.2,
         help="Delay in seconds between API requests (default: 0.2, i.e. max ~300 req/min)",
     )
+    cases_parser.add_argument(
+        "--write-delay",
+        type=float,
+        default=0.0,
+        help="Delay in seconds between OLDP API write requests (default: 0.0)",
+    )
+    cases_parser.add_argument(
+        "--cache-dir",
+        help="Directory to cache downloaded XMLs (currently RII only). "
+        "Enables resume on interrupted runs.",
+    )
 
     status_parser = subparsers.add_parser(
         "status", help="Show status dashboard for all providers"
@@ -698,6 +873,22 @@ def main():
         help="Output format (default: table)",
     )
 
+    replay_parser = subparsers.add_parser(
+        "replay",
+        help="Replay failed cases from a saved JSON file (no re-scraping)",
+    )
+    replay_parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to failed_*.json file from a previous run",
+    )
+    replay_parser.add_argument(
+        "--write-delay",
+        type=float,
+        default=0.0,
+        help="Delay in seconds between OLDP API write requests (default: 0.0)",
+    )
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -714,6 +905,7 @@ def main():
         "info": cmd_info,
         "laws": cmd_laws,
         "cases": cmd_cases,
+        "replay": cmd_replay,
         "status": cmd_status,
         "analyze-courts": cmd_analyze_courts,
     }

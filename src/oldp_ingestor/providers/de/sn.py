@@ -50,10 +50,18 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
     Uses Playwright to handle ASP.NET WebForms ViewState/PostBack.
     Content is PDF-only; text is extracted via pymupdf.
 
+    Supports server-side date filtering via Playwright form interaction
+    with the ESAMOSplus ASP.NET WebForms search page. Date fields
+    ``#DV1_C34`` (from) and ``#DV1_C35`` (to) are filled with DD.MM.YYYY
+    values before submitting the search. The server returns only matching
+    results.
+
     Args:
         court: Filter to single court name (e.g. "Oberlandesgericht Dresden").
         date_from: Only include decisions on or after this date (YYYY-MM-DD).
+            Filled into ``#DV1_C34`` (DD.MM.YYYY) for server-side filtering.
         date_to: Only include decisions on or before this date (YYYY-MM-DD).
+            Filled into ``#DV1_C35`` (DD.MM.YYYY) for server-side filtering.
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between page loads.
     """
@@ -70,8 +78,9 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
         date_to: str | None = None,
         limit: int | None = None,
         request_delay: float = 0.5,
+        proxy: str | None = None,
     ):
-        super().__init__(request_delay=request_delay)
+        super().__init__(request_delay=request_delay, proxy=proxy)
         self.court = court
         self.date_from = date_from
         self.date_to = date_to
@@ -196,8 +205,8 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
         try:
             # Navigate to search page
             logger.info("Loading ESAMOSplus search page...")
-            page.goto(SEARCH_URL, timeout=30000)
-            page.wait_for_selector("#DV1_C24", timeout=15000)
+            page.goto(SEARCH_URL, timeout=60000)
+            page.wait_for_selector("#DV1_C24", timeout=30000)
 
             # Set court filter if specified
             if self.court:

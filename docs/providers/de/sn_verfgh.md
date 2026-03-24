@@ -67,6 +67,16 @@ oldp-ingestor -v cases --provider sn-verfgh --date-from 2025-01-01
 bash dev-deployment/ingest.sh cases sn-verfgh
 ```
 
+## Date Filtering
+
+Date filtering is server-side via AJAX search date parameters. The POST to
+`/answers.php` includes:
+
+- `datumvon` — start date (YYYY-MM-DD, defaults to `1990-01-01`)
+- `datumbis` — end date (YYYY-MM-DD, defaults to `2099-12-31`)
+
+The server returns only decisions within the requested date range.
+
 ## Known Quirks
 
 - **No pagination**: All results are returned in a single AJAX response.

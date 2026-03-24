@@ -71,6 +71,17 @@ oldp-ingestor -v cases --provider by --limit 10
 bash dev-deployment/ingest.sh cases by
 ```
 
+## Date Filtering
+
+Date filtering is server-side via POST to `/Search` with ASP.NET form fields:
+
+- `SearchFields.DatumVon` — start date (DD.MM.YYYY, converted from ISO)
+- `SearchFields.DatumBis` — end date (DD.MM.YYYY, converted from ISO)
+
+The POST also includes a `__RequestVerificationToken` (ASP.NET CSRF token)
+extracted from the search form HTML. The server returns only results matching
+the requested date range.
+
 ## Known Quirks
 
 - **ISO-8859-1 encoding**: The XML inside the ZIP is ISO-8859-1 encoded. The

@@ -193,7 +193,8 @@ collection. Each item has `id` (court code) and `label` (full name), not
 ## CLI error handling
 
 - **409 Conflict** from OLDP: logged as "already exists", skipped
-- **Other HTTP errors**: logged with detail, does not abort the run
+- **Other HTTP errors** (e.g. court_not_found 400): logged with detail, case saved to `results/failed_<provider>.json`
+- **Failed cases saved**: When `--results-dir` is set and cases fail at the API POST step, they are saved to a JSON file for later replay via `oldp-ingestor replay --input results/failed_<provider>.json`
 - **Failed HTML fetch** for individual cases: case skipped
 - **Failed detail fetch**: case ingested without abstract
 - **Field sanitisation**: titles/sections truncated to API max lengths, `None` values removed

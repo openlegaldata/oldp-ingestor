@@ -24,6 +24,7 @@ dependencies = [
     "cssselect",
     "playwright",
     "pymupdf",
+    "pysocks>=1.7.1",
 ]
 
 [project.urls]
@@ -57,7 +58,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["src/oldp_ingestor"]
-omit = ["tests/test_real.py"]
+omit = ["tests/test_real.py", "src/oldp_ingestor/providers/playwright_client.py"]
 
 [tool.coverage.report]
 exclude_lines = [

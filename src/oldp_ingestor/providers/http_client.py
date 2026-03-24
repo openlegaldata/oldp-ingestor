@@ -1,14 +1,42 @@
 """Generic HTTP client with retry, pacing, and session management."""
 
 import logging
+import subprocess
 import time
+from importlib.metadata import version
 
 import requests
 from requests import Response
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "oldp-ingestor/0.1.3 (+https://github.com/openlegaldata)"
+
+def _build_user_agent() -> str:
+    """Build user agent string from package version and git commit hash."""
+    try:
+        ver = version("oldp-ingestor")
+    except Exception:
+        ver = "0.0.0"
+    try:
+        commit = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            .decode()
+            .strip()
+        )
+    except Exception:
+        commit = ""
+    ua = f"oldp-ingestor/{ver}"
+    if commit:
+        ua += f"+{commit}"
+    ua += " (+https://github.com/openlegaldata)"
+    return ua
+
+
+USER_AGENT = _build_user_agent()
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 1  # seconds
 
@@ -33,13 +61,23 @@ class HttpBaseClient:
     Manages a requests.Session with configurable request delay
     and automatic retry with exponential backoff on 429/503 responses and
     connection errors. Respects Retry-After headers when present.
+
+    Args:
+        base_url: Base URL prepended to relative paths.
+        request_delay: Delay in seconds between requests.
+        proxy: Optional SOCKS5/HTTP proxy URL (e.g. ``"socks5h://localhost:1080"``).
+            Applied to all requests made by this client.
     """
 
-    def __init__(self, base_url: str = "", request_delay: float = 0.2):
+    def __init__(
+        self, base_url: str = "", request_delay: float = 0.2, proxy: str | None = None
+    ):
         self.base_url = base_url
         self.request_delay = request_delay
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
+        if proxy:
+            self.session.proxies = {"http": proxy, "https": proxy}
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> Response:
         """Execute HTTP request with retry on 429/503 and connection errors.
