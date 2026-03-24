@@ -41,7 +41,7 @@ class PlaywrightBaseClient:
 
     def _ensure_browser(self):
         """Lazily start Playwright browser."""
-        if self._browser is None:
+        if self._browser is None:  # pragma: no cover
             from playwright.sync_api import sync_playwright
 
             self._playwright = sync_playwright().start()

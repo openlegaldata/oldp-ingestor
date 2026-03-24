@@ -3018,6 +3018,54 @@ def test_by_get_ids_from_page_bad_redirect(monkeypatch):
 # ===================================================================
 
 
+def test_build_user_agent():
+    """_build_user_agent returns version and optional commit hash."""
+    from oldp_ingestor.providers.http_client import _build_user_agent
+
+    ua = _build_user_agent()
+    assert ua.startswith("oldp-ingestor/")
+    assert "+https://github.com/openlegaldata" in ua
+    # Should have a version number
+    parts = ua.split("/")
+    version_part = parts[1].split("+")[0].split(" ")[0]
+    assert version_part[0].isdigit()
+
+
+def test_build_user_agent_no_git(monkeypatch):
+    """_build_user_agent handles missing git gracefully."""
+    import subprocess
+
+    from oldp_ingestor.providers.http_client import _build_user_agent
+
+    original = subprocess.check_output
+
+    def fail_git(cmd, **kwargs):
+        if "git" in cmd:
+            raise FileNotFoundError("git not found")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "check_output", fail_git)
+    ua = _build_user_agent()
+    assert "oldp-ingestor/" in ua
+    assert "+https://github.com/openlegaldata" in ua
+
+
+def test_build_user_agent_no_package(monkeypatch):
+    """_build_user_agent handles missing package metadata gracefully."""
+    import oldp_ingestor.providers.http_client as hc
+
+    monkeypatch.setattr(hc, "version", lambda _: (_ for _ in ()).throw(Exception()))
+    ua = hc._build_user_agent()
+    assert ua.startswith("oldp-ingestor/0.0.0")
+
+
+def test_user_agent_module_level():
+    """USER_AGENT is set at module level."""
+    from oldp_ingestor.providers.http_client import USER_AGENT
+
+    assert "oldp-ingestor/" in USER_AGENT
+
+
 @pytest.mark.playwright
 def test_playwright_ensure_browser_and_close():
     """Test real browser launch and shutdown."""
