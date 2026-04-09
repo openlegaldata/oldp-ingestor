@@ -26,6 +26,7 @@ RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/v0.2.33
 COPY --from=builder /build/dist/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN playwright install --with-deps chromium
 
 RUN useradd --create-home ingestor
