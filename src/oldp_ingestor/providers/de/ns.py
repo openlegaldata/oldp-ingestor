@@ -59,7 +59,9 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
         """GET search page and extract document UUIDs from results.
 
         Returns list of document paths like '/browse/document/<uuid>'.
-        Passes date/end_date_range params for server-side date filtering.
+        Results are sorted date_desc; date filtering happens client-side
+        since VORIS ignores the date= param and returns 404 when
+        combined with end_date_range.
         """
         params = {
             "query": "*",
@@ -67,10 +69,6 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
             "sort_order": "date_desc",
             "page": str(page),
         }
-        if self.date_from:
-            params["date"] = self.date_from
-        if self.date_to:
-            params["end_date_range"] = self.date_to
 
         resp = self._get(NS_SEARCH_PATH, params=params)
 
