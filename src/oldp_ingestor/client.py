@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 1  # seconds
+DEFAULT_TIMEOUT = (10, 120)  # (connect, read) seconds
 
 # HTTP status codes that trigger a retry
 _RETRYABLE_STATUS_CODES = (429, 503)
@@ -48,6 +49,7 @@ class OLDPClient:
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
         """Execute HTTP request with retry on 429/503 and connection errors."""
+        kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         for attempt in range(MAX_RETRIES + 1):
             try:
                 resp = self.session.request(method, url, **kwargs)
