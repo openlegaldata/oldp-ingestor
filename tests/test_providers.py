@@ -327,6 +327,33 @@ def test_case_provider_get_cases_raises():
         provider.get_cases()
 
 
+def test_case_provider_iter_cases_defaults_to_get_cases():
+    """Default iter_cases() yields from get_cases() (backwards compat)."""
+
+    class ListProvider(CaseProvider):
+        def get_cases(self):
+            return [{"file_number": "A"}, {"file_number": "B"}]
+
+    provider = ListProvider()
+    assert [c["file_number"] for c in provider.iter_cases()] == ["A", "B"]
+
+
+def test_case_provider_iter_cases_override_streams():
+    """Subclass overriding iter_cases() can stream without building a list."""
+
+    class StreamProvider(CaseProvider):
+        def iter_cases(self):
+            for fn in ("X", "Y", "Z"):
+                yield {"file_number": fn}
+
+        def get_cases(self):
+            return list(self.iter_cases())
+
+    provider = StreamProvider()
+    assert list(provider.iter_cases()) == provider.get_cases()
+    assert [c["file_number"] for c in provider.iter_cases()] == ["X", "Y", "Z"]
+
+
 # --- DummyCaseProvider ---
 
 CASE_FIXTURE_DATA = [

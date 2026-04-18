@@ -271,21 +271,36 @@ def cmd_cases(args):
     try:
         sink = _make_sink(args)
         provider = _make_case_provider(args)
+        batch_size = max(1, getattr(args, "batch_size", 100) or 100)
 
-        logger.info("Fetching cases from provider '%s'...", args.provider)
-        cases = provider.get_cases()
-        logger.info("Found %d case(s).", len(cases))
+        logger.info(
+            "Streaming cases from provider '%s' (batch_size=%d)...",
+            args.provider,
+            batch_size,
+        )
 
-        if args.limit and len(cases) > args.limit:
-            cases = cases[: args.limit]
-            logger.info("Limiting to %d case(s).", args.limit)
-
+        cases_found = 0
         cases_created = 0
         cases_skipped = 0
         cases_invalid = 0
         failed_cases: list[dict] = []
 
-        for case in cases:
+        def _flush_progress():
+            logger.info(
+                "Progress: found=%d created=%d skipped=%d invalid=%d errors=%d",
+                cases_found,
+                cases_created,
+                cases_skipped,
+                cases_invalid,
+                cases_errors,
+            )
+
+        for case in provider.iter_cases():
+            cases_found += 1
+            if args.limit and cases_found > args.limit:
+                logger.info("Limit reached at %d case(s).", args.limit)
+                break
+
             case_label = case.get("file_number", "?")
             # Truncate fields to API max lengths
             for field, max_len in (
@@ -309,6 +324,8 @@ def cmd_cases(args):
                 logger.warning(
                     "Skipped invalid case %s: %s", case_label, validation_error
                 )
+                if cases_found % batch_size == 0:
+                    _flush_progress()
                 continue
 
             # Inject source from provider
@@ -332,6 +349,11 @@ def cmd_cases(args):
                             detail = f" - {e.response.text[:200]}"
                     logger.error("Error creating case %s: %s%s", case_label, e, detail)
                     failed_cases.append({"case": case, "error": str(e) + detail})
+
+            if cases_found % batch_size == 0:
+                _flush_progress()
+
+        logger.info("Found %d case(s).", cases_found)
 
         # Save failed cases to file for later replay
         if failed_cases and args.results_dir:
@@ -840,6 +862,14 @@ def main():
         "--cache-dir",
         help="Directory to cache downloaded XMLs (currently RII only). "
         "Enables resume on interrupted runs.",
+    )
+    cases_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Max cases to buffer between provider and sink; also the "
+        "progress-logging interval (default: 100). Providers should not "
+        "accumulate more than this before streaming to the sink.",
     )
 
     status_parser = subparsers.add_parser(
