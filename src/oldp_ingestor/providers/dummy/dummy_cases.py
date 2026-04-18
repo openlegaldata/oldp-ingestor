@@ -10,6 +10,7 @@ CASE_FIELDS = (
     "ecli",
     "abstract",
     "title",
+    "source_url",
 )
 
 

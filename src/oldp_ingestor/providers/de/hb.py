@@ -190,13 +190,15 @@ class BremenCaseProvider(ScraperBaseClient, CaseProvider):
         if title:
             case["title"] = title
 
-        # Fetch PDF content
+        # Fetch PDF content. source_url points to the PDF itself — that's
+        # the canonical artifact content was extracted from.
         if pdf_link:
             pdf_url = f"{court_cfg['base_url']}{pdf_link}"
             try:
                 content = self._extract_text_from_pdf(pdf_url)
                 if content and len(content) >= 10:
                     case["content"] = content
+                    case["source_url"] = pdf_url
             except Exception as exc:
                 logger.warning("Failed to extract PDF for %s: %s", file_number, exc)
 

@@ -47,6 +47,9 @@ class CaseProvider(Provider):
           - file_number (str): court file number
           - date (str): YYYY-MM-DD
           - content (str): HTML content
+          - source_url (str): URL the content was extracted from (the PDF
+            URL, HTML detail page, or API endpoint as appropriate). This
+            is a required field on the OLDP ``Case`` model.
 
         Optional keys: type, ecli, abstract, title, source
 

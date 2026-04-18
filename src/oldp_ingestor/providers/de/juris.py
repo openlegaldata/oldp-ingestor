@@ -415,6 +415,7 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
             "file_number": info.get("file_number", ""),
             "date": info.get("date", ""),
             "content": content,
+            "source_url": url,
         }
 
         if info.get("type"):

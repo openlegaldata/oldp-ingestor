@@ -286,7 +286,7 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
             return join_multiple_with.join(matches)
         return default
 
-    def _parse_case_from_xml(self, xml_str: str) -> dict | None:
+    def _parse_case_from_xml(self, xml_str: str, source_url: str = "") -> dict | None:
         """Parse XML decision and return OLDP case dict.
 
         Returns None if access rights are not public or content is empty.
@@ -329,6 +329,7 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
             "file_number": self._get_tag_text(tree, "aktenzeichen", default=""),
             "date": date,
             "content": content,
+            "source_url": source_url,
         }
 
         # Optional fields
@@ -381,8 +382,9 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
             if xml_str is None:
                 continue
 
+            zip_url = self._get_zip_url(doc_id)
             try:
-                case = self._parse_case_from_xml(xml_str)
+                case = self._parse_case_from_xml(xml_str, source_url=zip_url)
             except Exception as exc:
                 logger.warning("Failed to parse XML for %s: %s", doc_id, exc)
                 continue

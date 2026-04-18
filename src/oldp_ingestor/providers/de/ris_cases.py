@@ -146,7 +146,9 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
         return None
 
     @staticmethod
-    def _map_case(item: dict, content: str, abstract: str | None) -> dict:
+    def _map_case(
+        item: dict, content: str, abstract: str | None, source_url: str = ""
+    ) -> dict:
         """Map RIS case-law fields to OLDP case dict format."""
         file_numbers = item.get("fileNumbers", [])
         file_number = file_numbers[0] if file_numbers else ""
@@ -156,6 +158,7 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
             "file_number": file_number,
             "date": item.get("decisionDate", ""),
             "content": content,
+            "source_url": source_url,
         }
 
         # Optional fields
@@ -257,7 +260,8 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
                     item = dict(item)  # avoid mutating original
                     item["courtName"] = self._resolve_court_name(court_code)
 
-                case = self._map_case(item, content, abstract)
+                source_url = f"{self.base_url}/v1/case-law/{document_number}.html"
+                case = self._map_case(item, content, abstract, source_url=source_url)
                 cases.append(case)
 
                 if self.limit and len(cases) >= self.limit:

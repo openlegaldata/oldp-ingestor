@@ -239,6 +239,7 @@ class SnVerfghCaseProvider(ScraperBaseClient, CaseProvider):
                 continue
 
             entry["content"] = content
+            entry["source_url"] = pdf_url
             cases.append(entry)
 
             if self.limit and len(cases) >= self.limit:

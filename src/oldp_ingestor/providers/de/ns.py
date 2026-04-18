@@ -140,6 +140,7 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
             "file_number": file_number,
             "date": date,
             "content": content,
+            "source_url": source_url,
         }
 
         if case_type:

@@ -3361,6 +3361,9 @@ def test_ns_parse_case_from_html():
     assert case["type"] == "Beschluss"
     assert "Tenor" in case["content"]
     assert "Zulassung der Berufung" in case["content"]
+    assert case["source_url"] == (
+        "https://voris.wolterskluwer-online.de/browse/document/test"
+    )
 
 
 def test_ns_parse_case_missing_content():
@@ -5690,6 +5693,8 @@ def test_sn_get_cases_with_mock(monkeypatch, tmp_path):
     </body></html>"""
 
     class FakeDownload:
+        url = "https://www.justiz.sachsen.de/esamosplus/fake.pdf"
+
         def path(self):
             return str(pdf_path)
 
