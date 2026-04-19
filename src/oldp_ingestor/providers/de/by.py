@@ -151,12 +151,10 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
         return f"{self.base_url}/Content/Zip/{doc_id}"
 
     def _parse_case_from_xml(self, xml_str: str, source_url: str) -> dict | None:
-        """Parse Bavaria XML (ISO-8859-1) and return OLDP case dict."""
-        # XML comes from ZIP decoded as iso-8859-1, so it's now a Unicode string.
-        # lxml needs bytes with matching encoding declaration, or we can re-encode
-        # as UTF-8 and strip the encoding declaration so lxml parses correctly.
+        """Parse Bavaria XML and return OLDP case dict."""
+        # XML from ZIP is UTF-8 (with optional BOM, stripped by utf-8-sig decode).
+        # Re-encode to bytes for lxml; strip any legacy iso-8859-1 declaration.
         xml_bytes = xml_str.encode("utf-8")
-        # Remove encoding declaration that says iso-8859-1 since we re-encoded to utf-8
         xml_bytes = xml_bytes.replace(b'encoding="iso-8859-1"', b'encoding="utf-8"')
         tree = etree.fromstring(xml_bytes)
 
@@ -205,6 +203,7 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
             "file_number": file_number,
             "date": date,
             "content": content,
+            "source_url": source_url,
         }
 
         if case_type:
@@ -245,7 +244,14 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
             for doc_id in ids:
                 zip_url = self._get_zip_url(doc_id)
                 try:
-                    xml_str = self._get_xml_from_zip(zip_url, encoding="iso-8859-1")
+                    xml_str = self._get_xml_from_zip(zip_url, encoding="utf-8-sig")
+                except UnicodeDecodeError:
+                    # Older docs are iso-8859-1 encoded (no BOM)
+                    try:
+                        xml_str = self._get_xml_from_zip(zip_url, encoding="iso-8859-1")
+                    except requests.RequestException as exc:
+                        logger.warning("Failed to download ZIP for %s: %s", doc_id, exc)
+                        continue
                 except requests.RequestException as exc:
                     logger.warning("Failed to download ZIP for %s: %s", doc_id, exc)
                     continue

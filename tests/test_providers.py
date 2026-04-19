@@ -327,6 +327,33 @@ def test_case_provider_get_cases_raises():
         provider.get_cases()
 
 
+def test_case_provider_iter_cases_defaults_to_get_cases():
+    """Default iter_cases() yields from get_cases() (backwards compat)."""
+
+    class ListProvider(CaseProvider):
+        def get_cases(self):
+            return [{"file_number": "A"}, {"file_number": "B"}]
+
+    provider = ListProvider()
+    assert [c["file_number"] for c in provider.iter_cases()] == ["A", "B"]
+
+
+def test_case_provider_iter_cases_override_streams():
+    """Subclass overriding iter_cases() can stream without building a list."""
+
+    class StreamProvider(CaseProvider):
+        def iter_cases(self):
+            for fn in ("X", "Y", "Z"):
+                yield {"file_number": fn}
+
+        def get_cases(self):
+            return list(self.iter_cases())
+
+    provider = StreamProvider()
+    assert list(provider.iter_cases()) == provider.get_cases()
+    assert [c["file_number"] for c in provider.iter_cases()] == ["X", "Y", "Z"]
+
+
 # --- DummyCaseProvider ---
 
 CASE_FIXTURE_DATA = [
@@ -3334,6 +3361,9 @@ def test_ns_parse_case_from_html():
     assert case["type"] == "Beschluss"
     assert "Tenor" in case["content"]
     assert "Zulassung der Berufung" in case["content"]
+    assert case["source_url"] == (
+        "https://voris.wolterskluwer-online.de/browse/document/test"
+    )
 
 
 def test_ns_parse_case_missing_content():
@@ -5663,6 +5693,8 @@ def test_sn_get_cases_with_mock(monkeypatch, tmp_path):
     </body></html>"""
 
     class FakeDownload:
+        url = "https://www.justiz.sachsen.de/esamosplus/fake.pdf"
+
         def path(self):
             return str(pdf_path)
 

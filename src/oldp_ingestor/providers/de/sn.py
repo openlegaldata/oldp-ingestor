@@ -270,6 +270,8 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
                                 content = "\n".join(f"<p>{t}</p>" for t in paragraphs)
                                 if len(content) >= 10:
                                     entry["content"] = content
+                                    # download.url is the PDF request URL
+                                    entry["source_url"] = download.url or SEARCH_URL
                     except Exception as exc:
                         logger.warning(
                             "Failed to download PDF for %s: %s",

@@ -47,7 +47,27 @@ class CaseProvider(Provider):
           - file_number (str): court file number
           - date (str): YYYY-MM-DD
           - content (str): HTML content
+          - source_url (str): URL the content was extracted from (the PDF
+            URL, HTML detail page, or API endpoint as appropriate). This
+            is a required field on the OLDP ``Case`` model.
 
         Optional keys: type, ecli, abstract, title, source
+
+        Subclasses must implement at least one of ``get_cases()`` or
+        ``iter_cases()``. The default ``iter_cases()`` yields from this.
         """
         raise NotImplementedError
+
+    def iter_cases(self):
+        """Yield case dicts one at a time (streaming).
+
+        Preferred over ``get_cases()`` for large datasets — avoids building
+        an unbounded in-memory list. The CLI consumes this as a stream and
+        writes each case to the sink immediately.
+
+        Default implementation materialises ``get_cases()`` and yields
+        from it, preserving backwards compatibility. Override directly to
+        avoid materialisation for providers that otherwise accumulate many
+        cases (e.g. the juris portals, rii).
+        """
+        yield from self.get_cases()

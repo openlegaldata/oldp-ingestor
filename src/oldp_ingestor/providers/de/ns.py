@@ -140,6 +140,7 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
             "file_number": file_number,
             "date": date,
             "content": content,
+            "source_url": source_url,
         }
 
         if case_type:
@@ -149,12 +150,11 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
 
         return case
 
-    def get_cases(self) -> list[dict]:
-        """Search VORIS and fetch individual case pages."""
-        cases: list[dict] = []
-
+    def iter_cases(self):
+        """Search VORIS and yield cases one at a time (streaming)."""
         page = 0  # 0-indexed pagination
         empty_pages = 0
+        yielded = 0
 
         while page <= NS_MAX_PAGE:
             try:
@@ -187,14 +187,19 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
                     logger.warning("Failed to parse case %s: %s", case_url, exc)
                     continue
 
-                if case is not None:
-                    if not self._is_within_date_range(case.get("date", "")):
-                        continue
-                    cases.append(case)
+                if case is None:
+                    continue
+                if not self._is_within_date_range(case.get("date", "")):
+                    continue
 
-                if self.limit and len(cases) >= self.limit:
-                    return cases
+                yield case
+                yielded += 1
+
+                if self.limit and yielded >= self.limit:
+                    return
 
             page += 1
 
-        return cases
+    def get_cases(self) -> list[dict]:
+        """Materialise :meth:`iter_cases` as a list. Prefer streaming."""
+        return list(self.iter_cases())

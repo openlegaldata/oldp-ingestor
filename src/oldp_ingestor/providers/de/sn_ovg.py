@@ -196,6 +196,8 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
             "file_number": file_number,
             "date": date,
             "content": content,
+            # PDF is where content came from if present, otherwise the doc page
+            "source_url": pdf_url if pdf_link else f"{SN_OVG_BASE_URL}{url}",
         }
 
         if case_type:

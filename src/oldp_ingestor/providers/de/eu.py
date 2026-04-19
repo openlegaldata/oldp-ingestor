@@ -248,14 +248,15 @@ OFFSET {offset}"""
             logger.warning("Failed to parse HTML for CELEX %s: %s", celex, exc)
             return None
 
-    def _fetch_case_content(self, celex: str) -> str | None:
+    def _fetch_case_content(self, celex: str) -> tuple[str, str] | None:
         """Fetch HTML full text for a CELEX number.
 
         Tries EUR-Lex first (primary source), falls back to CELLAR if
         EUR-Lex fails (e.g. WAF returns). Strips ``_RES`` suffix from
         CELEX before constructing URLs (these variants always 404).
 
-        Returns HTML body string or None on failure.
+        Returns ``(content, source_url)`` for the URL that served the
+        content, or ``None`` on failure.
         """
         # Strip _RES suffix (always 404s on both EUR-Lex and CELLAR)
         base_celex = re.sub(r"_RES$", "", celex)
@@ -266,11 +267,14 @@ OFFSET {offset}"""
         )
         content = self._try_fetch_html(eurlex_url, base_celex)
         if content is not None:
-            return content
+            return content, eurlex_url
 
         # Fallback to CELLAR if EUR-Lex fails
         cellar_url = f"{CELLAR_BASE_URL}/resource/celex/{base_celex}"
-        return self._try_fetch_html(cellar_url, base_celex)
+        content = self._try_fetch_html(cellar_url, base_celex)
+        if content is not None:
+            return content, cellar_url
+        return None
 
     def get_cases(self) -> list[dict]:
         """Fetch cases from EUR-Lex: SPARQL search -> EUR-Lex HTML content.
@@ -292,9 +296,10 @@ OFFSET {offset}"""
                 logger.warning("No CELEX for %s, skipping", ecli)
                 continue
 
-            content = self._fetch_case_content(celex)
-            if content is None:
+            fetched = self._fetch_case_content(celex)
+            if fetched is None:
                 continue
+            content, source_url = fetched
 
             if len(content) < EURLEX_MIN_CONTENT_LEN:
                 logger.warning(
@@ -313,6 +318,7 @@ OFFSET {offset}"""
                 "date": date,
                 "content": content,
                 "ecli": ecli,
+                "source_url": source_url,
             }
 
             if case_type:

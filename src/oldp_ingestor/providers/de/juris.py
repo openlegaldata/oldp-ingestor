@@ -415,6 +415,7 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
             "file_number": info.get("file_number", ""),
             "date": info.get("date", ""),
             "content": content,
+            "source_url": url,
         }
 
         if info.get("type"):
@@ -442,8 +443,8 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
 
         return case
 
-    def get_cases(self) -> list[dict]:
-        """Search portal, fetch and parse case details.
+    def iter_cases(self):
+        """Yield parsed cases one at a time (streaming).
 
         When ``date_from`` or ``date_to`` are set the extended search form
         is submitted via Playwright on page 1.  If the form submission
@@ -459,8 +460,8 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
         When ``cache_dir`` is set, parsed case dicts are persisted to disk
         so interrupted runs can resume.
         """
-        cases: list[dict] = []
         self._search_submitted = False
+        yielded = 0
 
         try:
             if self.date_from or self.date_to:
@@ -495,17 +496,22 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
                         logger.warning("Failed to parse case %s: %s", doc_id, exc)
                         continue
 
-                    if case is not None:
-                        if not self._is_within_date_range(case.get("date", "")):
-                            continue
-                        cases.append(case)
+                    if case is None:
+                        continue
+                    if not self._is_within_date_range(case.get("date", "")):
+                        continue
 
-                    if self.limit and len(cases) >= self.limit:
-                        return cases
+                    yield case
+                    yielded += 1
+
+                    if self.limit and yielded >= self.limit:
+                        return
         finally:
             self.close()
 
-        return cases
+    def get_cases(self) -> list[dict]:
+        """Materialise :meth:`iter_cases` as a list. Prefer streaming."""
+        return list(self.iter_cases())
 
     def _paginate_url_based(self):
         """Yield ``(ids, page_dates)`` via URL-based pagination (no date filter)."""
