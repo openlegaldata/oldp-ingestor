@@ -1566,6 +1566,95 @@ def test_http_base_client_proxy_sets_session_proxies():
     }
 
 
+def test_http_base_client_max_rpm_enforces_min_interval(monkeypatch):
+    """max_rpm imposes a minimum gap between requests to the same host."""
+    from oldp_ingestor.providers import http_client as hc
+
+    # Reset limiter state for a clean test
+    hc._LIMITER._last.clear()
+    hc._LIMITER._fails.clear()
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(hc.time, "sleep", lambda s: sleeps.append(s))
+
+    # Monotonic clock driven manually so the test is deterministic
+    t = [1000.0]
+    monkeypatch.setattr(hc.time, "monotonic", lambda: t[0])
+
+    client = hc.HttpBaseClient(max_rpm=60, request_delay=0)  # 1 req/sec
+    client._pace("example.com")  # first call: no prior timestamp, no wait
+    assert sleeps == []
+    client._pace("example.com")  # immediate second call: sleeps ~1s
+    assert any(abs(s - 1.0) < 0.01 for s in sleeps), sleeps
+
+
+def test_http_base_client_jitter_applied(monkeypatch):
+    """request_delay is multiplied by a ±20% jitter, never skipped at delay>0."""
+    from oldp_ingestor.providers import http_client as hc
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(hc.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(hc.random, "uniform", lambda a, b: b)  # max jitter
+
+    client = hc.HttpBaseClient(request_delay=0.5, max_rpm=0)
+    client._pace("example.com")
+    assert sleeps == [0.5 * (1.0 + hc.REQUEST_JITTER_FRAC)]
+
+
+def test_circuit_breaker_trips_after_threshold(monkeypatch):
+    """After N consecutive fully-failed calls to same host, raise BlockedHostError."""
+    import requests as req
+    from oldp_ingestor.providers import http_client as hc
+
+    hc._LIMITER._last.clear()
+    hc._LIMITER._fails.clear()
+    monkeypatch.setattr(hc.time, "sleep", lambda s: None)  # no real waits
+
+    def always_fail(self, method, url, timeout=None, **kwargs):
+        raise req.ConnectionError("network down")
+
+    monkeypatch.setattr(hc.requests.Session, "request", always_fail)
+
+    client = hc.HttpBaseClient(request_delay=0, max_rpm=0, circuit_breaker_threshold=3)
+
+    # First two fully-failed calls just raise ConnectionError
+    for _ in range(2):
+        with pytest.raises(req.ConnectionError) as ei:
+            client._request_with_retry("GET", "https://blocked.example/path")
+        assert not isinstance(ei.value, hc.BlockedHostError)
+
+    # Third consecutive failure trips the breaker
+    with pytest.raises(hc.BlockedHostError):
+        client._request_with_retry("GET", "https://blocked.example/path")
+
+
+def test_circuit_breaker_resets_on_success(monkeypatch):
+    """A successful response clears the host's consecutive-failure counter."""
+    from oldp_ingestor.providers import http_client as hc
+
+    hc._LIMITER._last.clear()
+    hc._LIMITER._fails.clear()
+    monkeypatch.setattr(hc.time, "sleep", lambda s: None)
+
+    class FakeResp:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        hc.requests.Session, "request", lambda self, *a, **k: FakeResp()
+    )
+
+    # Seed a stale failure count then verify one success clears it
+    hc._LIMITER._fails["host.example"] = 2
+    client = hc.HttpBaseClient(request_delay=0, max_rpm=0, circuit_breaker_threshold=3)
+    resp = client._request_with_retry("GET", "https://host.example/")
+    assert resp.status_code == 200
+    assert hc._LIMITER._fails.get("host.example", 0) == 0
+
+
 def test_http_base_client_no_proxy_leaves_proxies_empty():
     from oldp_ingestor.providers.http_client import HttpBaseClient
 
@@ -6293,7 +6382,12 @@ def test_rii_get_cases_with_dates_limit(monkeypatch):
 
 
 def test_rii_get_cases_with_dates_http_error(monkeypatch):
-    """_get_cases_with_dates handles HTTP errors gracefully."""
+    """_get_cases_with_dates surfaces connection errors as exceptions.
+
+    A blocked/unreachable search endpoint is a hard failure — swallowing it
+    would advance the cron state file and mask the outage.
+    """
+    import pytest
     import requests as req
 
     from oldp_ingestor.providers.de.rii import RiiCaseProvider
@@ -6304,8 +6398,8 @@ def test_rii_get_cases_with_dates_http_error(monkeypatch):
     monkeypatch.setattr(RiiCaseProvider, "_get", mock_get)
 
     provider = RiiCaseProvider(date_from="2025-01-01", request_delay=0)
-    cases = provider._get_cases_with_dates()
-    assert cases == []
+    with pytest.raises(req.ConnectionError):
+        provider._get_cases_with_dates()
 
 
 def test_rii_get_cases_dispatches_to_date_search(monkeypatch):

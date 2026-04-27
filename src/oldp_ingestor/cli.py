@@ -750,6 +750,20 @@ def main():
         help="SOCKS5/HTTP proxy URL for provider requests (e.g. socks5h://localhost:1080). "
         "Not applied to the OLDP API sink.",
     )
+    parser.add_argument(
+        "--max-rpm",
+        type=int,
+        default=0,
+        help="Hard cap on requests-per-minute per target host (0 = disabled, default). "
+        "Applied on top of --request-delay. Use for backfills against rate-sensitive hosts.",
+    )
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=5,
+        help="After this many consecutive fully-failed calls to the same host, "
+        "abort the run with BlockedHostError (0 = disabled, default: 5).",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("info", help="Show API info from the OLDP instance")
@@ -925,6 +939,13 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    from oldp_ingestor.providers import http_client
+
+    http_client.configure_defaults(
+        max_rpm=args.max_rpm,
+        circuit_breaker_threshold=args.max_consecutive_failures,
     )
 
     if not args.command:

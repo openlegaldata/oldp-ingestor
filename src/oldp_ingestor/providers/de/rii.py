@@ -460,13 +460,9 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
 
             while True:
                 url = self._get_page_url(page, court_code)
-                try:
-                    ids, page_dates = self._get_ids_and_dates_from_page(url)
-                except requests.RequestException as exc:
-                    logger.warning(
-                        "Failed to fetch page %d for %s: %s", page, court_code, exc
-                    )
-                    break
+                # Let RequestException propagate — a blocked/unreachable RII
+                # listing is a hard failure, not an empty result.
+                ids, page_dates = self._get_ids_and_dates_from_page(url)
 
                 if not ids:
                     empty_pages += 1
@@ -541,11 +537,10 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
 
         while True:
             url = self._build_search_url(offset)
-            try:
-                text = self._get(url).text
-            except requests.RequestException as exc:
-                logger.warning("Failed date search at offset %d: %s", offset, exc)
-                break
+            # Let RequestException propagate — a blocked/unreachable RII search
+            # is a hard failure, not an empty result. Swallowing it advances
+            # the state file and masks the outage.
+            text = self._get(url).text
 
             ids = list(set(re.findall(r"doc\.id=([a-zA-Z0-9-]+?)&", text)))
             if not ids:
