@@ -259,6 +259,24 @@ def _make_law_provider(args) -> LawProvider:
             proxy=args.proxy,
         )
 
+    if args.provider == "gii":
+        from oldp_ingestor.providers.de.gii import GII_TOC_URL, GiiLawProvider
+
+        cache_dir = getattr(args, "cache_dir", None)
+        if not cache_dir:
+            logger.error("--cache-dir is required for the gii provider")
+            sys.exit(1)
+        oldp_client = OLDPClient.from_settings()
+        return GiiLawProvider(
+            oldp_client=oldp_client,
+            cache_dir=cache_dir,
+            toc_url=getattr(args, "toc_url", None) or GII_TOC_URL,
+            force_full=getattr(args, "full", False),
+            limit=args.limit,
+            request_delay=args.request_delay,
+            proxy=args.proxy,
+        )
+
     logger.error("Unknown provider '%s'", args.provider)
     sys.exit(1)
 
@@ -772,7 +790,7 @@ def main():
     laws_parser.add_argument(
         "--provider",
         required=True,
-        choices=["dummy", "ris"],
+        choices=["dummy", "ris", "gii"],
         help="Data source provider",
     )
     laws_parser.add_argument(
@@ -807,6 +825,21 @@ def main():
         type=float,
         default=0.0,
         help="Delay in seconds between OLDP API write requests (default: 0.0)",
+    )
+    laws_parser.add_argument(
+        "--cache-dir",
+        help="Directory to cache downloaded zips and per-slug state "
+        "(required for the gii provider; enables resume on interrupted runs).",
+    )
+    laws_parser.add_argument(
+        "--toc-url",
+        help="Override the TOC URL (gii provider only).",
+    )
+    laws_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Skip If-Modified-Since and re-download every zip "
+        "(gii provider only; forces a full re-sync).",
     )
 
     cases_parser = subparsers.add_parser("cases", help="Ingest cases into OLDP")

@@ -7,6 +7,7 @@ Data sources:
 | CLI provider | Type | Source |
 |---|---|---|
 | `ris` | laws + cases | Rechtsinformationssystem des Bundes (RIS) |
+| `gii` | laws | Gesetze im Internet (gesetze-im-internet.de) |
 | `rii` | cases | Rechtsprechung im Internet (RII) — federal courts |
 | `by` | cases | Gesetze Bayern — Bavarian courts |
 | `nrw` | cases | NRWE Rechtsprechungsdatenbank — NRW courts |
@@ -93,6 +94,34 @@ oldp-ingestor laws --provider ris --date-from 2025-01-01 --date-to 2025-06-30
 # Override the default request delay (0.2s) for slower pacing
 oldp-ingestor laws --provider ris --request-delay 0.5
 ```
+
+#### From gesetze-im-internet.de (`gii`)
+
+Pulls all German federal laws from the official BMJ/juris feed
+(`gii-toc.xml` + per-law `xml.zip`). The TOC has no per-entry timestamps,
+so change detection uses HTTP conditional GET (`If-Modified-Since`) on
+each zip; unchanged zips return 304 and skip parsing entirely.
+
+```bash
+# Initial cold-run ingest (≈6,800 laws; resumable via the cache directory)
+oldp-ingestor laws --provider gii --cache-dir /var/cache/oldp-gii
+
+# Subsequent incremental runs reuse the cache; only changed zips are
+# downloaded and uploaded as new revisions.
+oldp-ingestor laws --provider gii --cache-dir /var/cache/oldp-gii
+
+# Forced full re-sync (ignores If-Modified-Since)
+oldp-ingestor laws --provider gii --cache-dir /var/cache/oldp-gii --full
+
+# Override the default TOC URL (rarely needed)
+oldp-ingestor laws --provider gii --cache-dir /var/cache/oldp-gii \
+    --toc-url https://example.test/gii-toc.xml
+```
+
+The `--cache-dir` is required: it stores the per-slug HTTP `Last-Modified`,
+the URL slug → ``jurabk`` mapping (used to query OLDP without re-downloading),
+and the last-fetched zip body (used by `get_laws()` to re-parse without a
+second download).
 
 For automated cron usage, see `dev-deployment/ingest-ris.sh` (laws) and
 `dev-deployment/ingest-ris-cases.sh` (cases) which track the last successful
