@@ -544,6 +544,57 @@ def test_resume_re_uploads_when_oldp_lacks_book(
     assert laws and all(law["book_code"] == "GG" for law in laws)
 
 
+def test_iter_law_books_streams(
+    monkeypatch, cache_dir, toc_xml, gg_bytes, baunvo_bytes
+):
+    """iter_law_books must yield mid-sweep, not after all entries are processed.
+
+    Verified by checking that the first yielded book lands before the
+    second TOC entry is fetched: we record the order of HTTP calls and
+    yields and assert the yield interleaves with the next fetch.
+    """
+    call_log: list[str] = []
+
+    def make_resp(label, body, headers=None):
+        def _h(_kwargs):
+            call_log.append(label)
+            return _FakeResponse(content=body, headers=headers or {})
+
+        return _h
+
+    responses = {
+        GII_TOC_URL: _FakeResponse(text=toc_xml),
+        "https://www.gesetze-im-internet.de/gg/xml.zip": make_resp(
+            "fetch:gg",
+            gg_bytes,
+            {"Last-Modified": "Wed, 26 Mar 2025 21:40:03 GMT"},
+        ),
+        "https://www.gesetze-im-internet.de/baunvo/xml.zip": make_resp(
+            "fetch:baunvo",
+            baunvo_bytes,
+            {"Last-Modified": "Thu, 17 Aug 2023 19:35:04 GMT"},
+        ),
+    }
+    _install_http_mock(monkeypatch, responses)
+
+    provider = GiiLawProvider(oldp_client=None, cache_dir=cache_dir)
+    gen = provider.iter_law_books()
+
+    first = next(gen)
+    call_log.append(f"yield:{first['code']}")
+    second = next(gen)
+    call_log.append(f"yield:{second['code']}")
+
+    # The first yield must land between the two fetches — i.e. fetch:gg
+    # comes before yield:GG, and yield:GG comes before fetch:baunvo.
+    assert call_log == ["fetch:gg", "yield:GG", "fetch:baunvo", "yield:BauNVO"]
+
+    # Generator drained → finally clause persists state to disk
+    with pytest.raises(StopIteration):
+        next(gen)
+    assert Path(cache_dir, "done.json").exists()
+
+
 def test_oldp_bootstrap_paginates(monkeypatch, cache_dir, toc_xml):
     """The bootstrap follows the `next` link on the OLDP response."""
     pages = [

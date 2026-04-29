@@ -114,20 +114,22 @@ def cmd_laws(args):
         sink = _make_sink(args)
         provider = _make_law_provider(args)
 
-        logger.info("Fetching law books from provider '%s'...", args.provider)
-        books = provider.get_law_books()
-        logger.info("Found %d law book(s).", len(books))
+        logger.info(
+            "Streaming law books from provider '%s' (interleaved upload)...",
+            args.provider,
+        )
 
-        if args.limit and len(books) > args.limit:
-            books = books[: args.limit]
-            logger.info("Limiting to %d law book(s).", args.limit)
-
+        books_found = 0
         books_created = 0
         books_skipped = 0
         laws_created = 0
         laws_skipped = 0
 
-        for book in books:
+        for book in provider.iter_law_books():
+            books_found += 1
+            if args.limit and books_found > args.limit:
+                logger.info("Limit reached at %d law book(s).", args.limit)
+                break
             book_label = f"{book['code']} ({book.get('revision_date', '?')})"
             # Inject source from provider
             if provider.SOURCE.get("name"):

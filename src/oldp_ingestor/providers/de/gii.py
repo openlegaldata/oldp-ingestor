@@ -76,6 +76,9 @@ logger = logging.getLogger(__name__)
 GII_BASE_URL = "https://www.gesetze-im-internet.de"
 GII_TOC_URL = f"{GII_BASE_URL}/gii-toc.xml"
 OLDP_LAW_BOOKS_PATH = "/api/law_books/?latest=true&limit=1000"
+# Persist done.json + url_slug_to_jurabk.json every N TOC entries during
+# the streaming sweep so a crash loses at most this much progress.
+_STATE_PERSIST_EVERY = 100
 
 
 def _http_date(date_str: str) -> str:
@@ -414,13 +417,24 @@ class GiiLawProvider(HttpBaseClient, LawProvider):
     # ------------------------------------------------------------------ #
 
     def get_law_books(self) -> list[dict[str, Any]]:
+        return list(self.iter_law_books())
+
+    def iter_law_books(self):
+        """Stream books as the TOC is swept.
+
+        For each TOC entry: conditional GET → 304 (skip / resume) or 200
+        (parse, decide, yield). Yields a book dict the moment one is
+        ready so the CLI can upload it before the next entry is touched.
+        State is persisted every :data:`_STATE_PERSIST_EVERY` entries so
+        a crash mid-stream loses at most that many entries' progress.
+        """
         oldp_books = self._fetch_oldp_latest_books()
         entries = self._fetch_toc()
         if self.limit:
             entries = entries[: self.limit]
             logger.info("Limit applied — processing %d TOC entries", len(entries))
 
-        books: list[dict[str, Any]] = []
+        emitted = 0
         try:
             for idx, (url_slug, title, zip_url) in enumerate(entries, start=1):
                 if idx % 100 == 0:
@@ -428,18 +442,21 @@ class GiiLawProvider(HttpBaseClient, LawProvider):
                         "Progress: %d/%d entries scanned, %d uploads queued",
                         idx,
                         len(entries),
-                        len(books),
+                        emitted,
                     )
+                if idx % _STATE_PERSIST_EVERY == 0:
+                    self._persist_state()
                 book = self._process_entry(url_slug, title, zip_url, oldp_books)
                 if book is not None:
-                    books.append(book)
+                    emitted += 1
+                    yield book
         finally:
-            # Persist after every run, even on failure, so the next run
-            # picks up where we left off.
+            # Persist on the way out — finally fires on normal completion,
+            # exception, and generator close (early-stop from CLI --limit
+            # or interrupt). Either way, the next run resumes correctly.
             self._persist_state()
 
-        logger.info("GII sweep done: %d new/updated book(s) to upload", len(books))
-        return books
+        logger.info("GII sweep done: %d new/updated book(s) to upload", emitted)
 
     def get_laws(self, book_code: str, revision_date: str) -> list[dict[str, Any]]:
         zip_path = self._book_to_zip.get((book_code, revision_date))
