@@ -131,6 +131,16 @@ def cmd_laws(args):
                 logger.info("Limit reached at %d law book(s).", args.limit)
                 break
             book_label = f"{book['code']} ({book.get('revision_date', '?')})"
+            # Truncate to API max_lengths: code=100, title=250
+            for field, max_len in (("code", 100), ("title", 250)):
+                if (
+                    field in book
+                    and isinstance(book[field], str)
+                    and len(book[field]) > max_len
+                ):
+                    book[field] = book[field][:max_len]
+            # Drop None values (API rejects null for optional fields)
+            book = {k: v for k, v in book.items() if v is not None}
             # Inject source from provider
             if provider.SOURCE.get("name"):
                 book["source"] = provider.SOURCE
@@ -145,7 +155,13 @@ def cmd_laws(args):
                     continue
                 else:
                     books_errors += 1
-                    logger.error("Error creating book %s: %s", book_label, e)
+                    detail = ""
+                    if e.response is not None:
+                        try:
+                            detail = f" - {e.response.json()}"
+                        except (ValueError, AttributeError):
+                            detail = f" - {e.response.text[:200]}"
+                    logger.error("Error creating book %s: %s%s", book_label, e, detail)
                     continue
 
             laws = provider.get_laws(book["code"], book.get("revision_date", ""))
