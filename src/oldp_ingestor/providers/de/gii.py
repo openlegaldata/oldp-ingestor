@@ -307,14 +307,55 @@ class GiiLawProvider(HttpBaseClient, LawProvider):
             return None
 
         if resp.status_code == 304:
-            logger.debug("Unchanged (304): %s", url_slug)
-            # Refresh oldp revision tracking even when we skip the body —
-            # OLDP could have been updated externally.
+            # Body unchanged on the gii side. Two sub-cases:
+            #
+            # (a) OLDP already has this book at the recorded revision →
+            #     truly nothing to do, skip.
+            # (b) OLDP doesn't have it, or has an older revision (e.g. a
+            #     previous run died mid-upload) → re-parse from the cached
+            #     zip and queue an upload. This is what makes runs
+            #     resumable: state alone isn't enough; we cross-check
+            #     against OLDP's actual ``?latest=true`` snapshot.
             jurabk = self._mapping.get(url_slug, prev.get("jurabk"))
-            if jurabk and jurabk in oldp_books:
-                prev["oldp_revision_date"] = oldp_books[jurabk]
+            cached_zip = self._zip_path(url_slug)
+            oldp_revision = oldp_books.get(jurabk) if jurabk else None
+            recorded = prev.get("oldp_revision_date")
+
+            if jurabk and oldp_revision and recorded and oldp_revision >= recorded:
+                logger.debug("Unchanged (304), oldp up-to-date: %s", url_slug)
+                prev["oldp_revision_date"] = oldp_revision
                 self._state[url_slug] = prev
-            return None
+                return None
+
+            if not (jurabk and recorded and os.path.isfile(cached_zip)):
+                # Missing pieces — treat as if we never saw this slug.
+                logger.debug(
+                    "Unchanged (304) but cache incomplete for %s — skipping",
+                    url_slug,
+                )
+                return None
+
+            logger.info(
+                "Resume: 304 from gii but oldp lacks %s @ %s — re-uploading "
+                "from cached zip",
+                jurabk,
+                recorded,
+            )
+            try:
+                with open(cached_zip, "rb") as f:
+                    book, _laws = parse_gii_zip(f.read())
+            except (GiiParseError, OSError) as exc:
+                logger.warning("Failed to re-parse cached %s: %s", url_slug, exc)
+                return None
+            revision_date = book.get("revision_date") or recorded
+            self._book_to_zip[(jurabk, revision_date)] = cached_zip
+            return {
+                "code": jurabk,
+                "title": book.get("title") or toc_title or jurabk,
+                "revision_date": revision_date,
+                "changelog": book.get("changelog"),
+                "footnotes": book.get("footnotes"),
+            }
 
         # 200: parse, decide, persist.
         new_last_modified = resp.headers.get("Last-Modified") or since or ""

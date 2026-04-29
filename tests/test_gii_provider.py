@@ -445,6 +445,65 @@ def test_get_laws_handles_corrupt_cached_zip(monkeypatch, cache_dir, toc_xml, gg
     assert laws == []
 
 
+def test_resume_re_uploads_when_oldp_lacks_book(
+    monkeypatch, cache_dir, toc_xml, gg_bytes, baunvo_bytes
+):
+    """304 + oldp missing the book → re-parse from cached zip and emit upload.
+
+    This is the resumability story: a previous run died mid-upload after
+    saving the zip and recording state, but oldp never received the
+    POST. On the next run gii says 304 (zip unchanged) but oldp's
+    /latest=true snapshot doesn't list the code, so we replay from cache.
+    """
+    Path(cache_dir, "zips").mkdir(parents=True, exist_ok=True)
+    Path(cache_dir, "zips", "gg.zip").write_bytes(gg_bytes)
+    Path(cache_dir, "zips", "baunvo.zip").write_bytes(baunvo_bytes)
+    Path(cache_dir, "url_slug_to_jurabk.json").write_text(
+        json.dumps({"gg": "GG", "baunvo": "BauNVO"})
+    )
+    Path(cache_dir, "done.json").write_text(
+        json.dumps(
+            {
+                "gg": {
+                    "jurabk": "GG",
+                    "http_last_modified": "Wed, 26 Mar 2025 21:40:03 GMT",
+                    "oldp_revision_date": "2025-03-26",
+                },
+                "baunvo": {
+                    "jurabk": "BauNVO",
+                    "http_last_modified": "Thu, 17 Aug 2023 19:35:04 GMT",
+                    "oldp_revision_date": "2023-07-03",
+                },
+            }
+        )
+    )
+    responses = {
+        GII_TOC_URL: _FakeResponse(text=toc_xml),
+        "https://www.gesetze-im-internet.de/gg/xml.zip": _FakeResponse(status_code=304),
+        "https://www.gesetze-im-internet.de/baunvo/xml.zip": _FakeResponse(
+            status_code=304
+        ),
+    }
+    _install_http_mock(monkeypatch, responses)
+
+    class FakeOldp:
+        def get(self, path):
+            # OLDP only knows about BauNVO — GG was queued but never landed.
+            return {
+                "results": [{"code": "BauNVO", "revision_date": "2023-07-03"}],
+                "next": None,
+            }
+
+    provider = GiiLawProvider(oldp_client=FakeOldp(), cache_dir=cache_dir)
+    books = provider.get_law_books()
+
+    codes = [b["code"] for b in books]
+    assert codes == ["GG"]  # BauNVO truly unchanged; GG re-uploaded
+    # And the cached zip is the source for get_laws
+    laws = provider.get_laws("GG", books[0]["revision_date"])
+    assert laws and all(law["book_code"] == "GG" for law in laws)
+
+
 def test_oldp_bootstrap_paginates(monkeypatch, cache_dir, toc_xml):
     """The bootstrap follows the `next` link on the OLDP response."""
     pages = [
