@@ -98,6 +98,46 @@ def test_parse_gii_xml_emits_book_and_laws():
     assert orders == sorted(orders)
 
 
+def test_parse_skips_norms_with_empty_content():
+    """Norms with section/title but no body must not be emitted as laws.
+
+    The OLDP Law.content field requires min_length=1; gii structural
+    placeholders (Inhaltsübersicht, repealed norms) have empty
+    <Content> and would otherwise earn a 400 from the API.
+    """
+    xml = """<?xml version="1.0"?>
+<dokumente builddate="20260101000000" doknr="BJNR000000000">
+  <norm doknr="BJNR000000000">
+    <metadaten>
+      <jurabk>TEST</jurabk>
+      <langue>Test law</langue>
+    </metadaten>
+  </norm>
+  <norm doknr="BJNR000000001">
+    <metadaten>
+      <enbez>Inhaltsübersicht</enbez>
+      <titel>Inhaltsübersicht</titel>
+    </metadaten>
+    <textdaten>
+      <text format="XML"><Content/></text>
+    </textdaten>
+  </norm>
+  <norm doknr="BJNR000000002">
+    <metadaten>
+      <enbez>§ 1</enbez>
+      <titel>Real section</titel>
+    </metadaten>
+    <textdaten>
+      <text format="XML"><Content><P>Real body.</P></Content></text>
+    </textdaten>
+  </norm>
+</dokumente>""".encode()
+    book, laws = parse_gii_xml(xml)
+    assert book["code"] == "TEST"
+    assert [law["section"] for law in laws] == ["§ 1"]
+    assert "Real body" in laws[0]["content"]
+
+
 def test_parse_gii_zip_round_trip():
     book, laws = parse_gii_zip(_read_fixture("gg.zip"))
     assert book["code"] == "GG"

@@ -182,9 +182,11 @@ def _build_changelog(header_norm) -> list[dict[str, str]]:
 def _law_from_norm(norm, book_code: str, order: int) -> dict[str, Any] | None:
     """Build an OLDP Law dict from a single ``<norm>`` element.
 
-    Returns ``None`` when the norm has neither a section label (``<enbez>``)
-    nor a title — those are typically header artifacts that don't map to a
-    standalone Law row.
+    Returns ``None`` when the norm cannot become a valid Law row: either it
+    has no section/title labels at all (header artifacts), or it has no
+    body content (e.g. the ``Inhaltsübersicht`` placeholder). The OLDP
+    ``Law.content`` field requires ``min_length=1`` so emitting an empty
+    one would only earn a 400.
     """
     section = _strip(_node_text(norm, "metadaten/enbez/text()"))
     title = _strip(_node_text(norm, "metadaten/titel/text()"))
@@ -193,6 +195,12 @@ def _law_from_norm(norm, book_code: str, order: int) -> dict[str, Any] | None:
         return None
 
     content = _serialize_children(norm, "textdaten/text/Content/*")
+    if not content.strip():
+        # gii structural placeholders (Inhaltsübersicht, repealed norms,
+        # unbound section headings) carry no body. The API rejects empty
+        # content with HTTP 400, so skip them at the parser.
+        return None
+
     footnotes_xml = _serialize_children(norm, "textdaten/fussnoten/Content/*")
 
     law: dict[str, Any] = {
