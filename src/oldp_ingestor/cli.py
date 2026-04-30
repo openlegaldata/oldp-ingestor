@@ -114,21 +114,33 @@ def cmd_laws(args):
         sink = _make_sink(args)
         provider = _make_law_provider(args)
 
-        logger.info("Fetching law books from provider '%s'...", args.provider)
-        books = provider.get_law_books()
-        logger.info("Found %d law book(s).", len(books))
+        logger.info(
+            "Streaming law books from provider '%s' (interleaved upload)...",
+            args.provider,
+        )
 
-        if args.limit and len(books) > args.limit:
-            books = books[: args.limit]
-            logger.info("Limiting to %d law book(s).", args.limit)
-
+        books_found = 0
         books_created = 0
         books_skipped = 0
         laws_created = 0
         laws_skipped = 0
 
-        for book in books:
+        for book in provider.iter_law_books():
+            books_found += 1
+            if args.limit and books_found > args.limit:
+                logger.info("Limit reached at %d law book(s).", args.limit)
+                break
             book_label = f"{book['code']} ({book.get('revision_date', '?')})"
+            # Truncate to API max_lengths: code=100, title=250
+            for field, max_len in (("code", 100), ("title", 250)):
+                if (
+                    field in book
+                    and isinstance(book[field], str)
+                    and len(book[field]) > max_len
+                ):
+                    book[field] = book[field][:max_len]
+            # Drop None values (API rejects null for optional fields)
+            book = {k: v for k, v in book.items() if v is not None}
             # Inject source from provider
             if provider.SOURCE.get("name"):
                 book["source"] = provider.SOURCE
@@ -143,7 +155,13 @@ def cmd_laws(args):
                     continue
                 else:
                     books_errors += 1
-                    logger.error("Error creating book %s: %s", book_label, e)
+                    detail = ""
+                    if e.response is not None:
+                        try:
+                            detail = f" - {e.response.json()}"
+                        except (ValueError, AttributeError):
+                            detail = f" - {e.response.text[:200]}"
+                    logger.error("Error creating book %s: %s%s", book_label, e, detail)
                     continue
 
             laws = provider.get_laws(book["code"], book.get("revision_date", ""))
@@ -255,6 +273,24 @@ def _make_law_provider(args) -> LawProvider:
             limit=args.limit,
             date_from=args.date_from,
             date_to=args.date_to,
+            request_delay=args.request_delay,
+            proxy=args.proxy,
+        )
+
+    if args.provider == "gii":
+        from oldp_ingestor.providers.de.gii import GII_TOC_URL, GiiLawProvider
+
+        cache_dir = getattr(args, "cache_dir", None)
+        if not cache_dir:
+            logger.error("--cache-dir is required for the gii provider")
+            sys.exit(1)
+        oldp_client = OLDPClient.from_settings()
+        return GiiLawProvider(
+            oldp_client=oldp_client,
+            cache_dir=cache_dir,
+            toc_url=getattr(args, "toc_url", None) or GII_TOC_URL,
+            force_full=getattr(args, "full", False),
+            limit=args.limit,
             request_delay=args.request_delay,
             proxy=args.proxy,
         )
@@ -772,7 +808,7 @@ def main():
     laws_parser.add_argument(
         "--provider",
         required=True,
-        choices=["dummy", "ris"],
+        choices=["dummy", "ris", "gii"],
         help="Data source provider",
     )
     laws_parser.add_argument(
@@ -807,6 +843,21 @@ def main():
         type=float,
         default=0.0,
         help="Delay in seconds between OLDP API write requests (default: 0.0)",
+    )
+    laws_parser.add_argument(
+        "--cache-dir",
+        help="Directory to cache downloaded zips and per-slug state "
+        "(required for the gii provider; enables resume on interrupted runs).",
+    )
+    laws_parser.add_argument(
+        "--toc-url",
+        help="Override the TOC URL (gii provider only).",
+    )
+    laws_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Skip If-Modified-Since and re-download every zip "
+        "(gii provider only; forces a full re-sync).",
     )
 
     cases_parser = subparsers.add_parser("cases", help="Ingest cases into OLDP")
