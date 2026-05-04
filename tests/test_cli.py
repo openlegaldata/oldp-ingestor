@@ -153,6 +153,46 @@ def test_make_case_provider_ris(monkeypatch):
     assert provider.court == "BGH"
 
 
+def test_make_law_provider_gii(monkeypatch, tmp_path):
+    monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")
+    monkeypatch.setenv("OLDP_API_TOKEN", "tok")
+    from oldp_ingestor.cli import _make_law_provider
+    from oldp_ingestor.providers.de.gii import GiiLawProvider
+
+    class FakeArgs:
+        provider = "gii"
+        cache_dir = str(tmp_path / "c")
+        toc_url = None
+        full = False
+        limit = None
+        request_delay = 0.2
+        proxy = None
+        search_term = None
+        date_from = None
+        date_to = None
+
+    provider = _make_law_provider(FakeArgs())
+    assert isinstance(provider, GiiLawProvider)
+    assert provider.cache_dir == FakeArgs.cache_dir
+
+
+def test_make_law_provider_gii_requires_cache_dir(monkeypatch):
+    monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")
+    from oldp_ingestor.cli import _make_law_provider
+
+    class FakeArgs:
+        provider = "gii"
+        cache_dir = None
+        toc_url = None
+        full = False
+        limit = None
+        request_delay = 0.2
+        proxy = None
+
+    with pytest.raises(SystemExit):
+        _make_law_provider(FakeArgs())
+
+
 def test_make_law_provider_unknown(monkeypatch):
     monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")
     from oldp_ingestor.cli import _make_law_provider

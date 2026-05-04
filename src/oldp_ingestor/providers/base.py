@@ -15,6 +15,21 @@ class LawProvider(Provider):
     def get_laws(self, book_code: str, revision_date: str) -> list[dict]:
         raise NotImplementedError
 
+    def iter_law_books(self):
+        """Yield law book dicts one at a time (streaming).
+
+        Preferred over :meth:`get_law_books` for large catalogues (e.g. the
+        gii provider's ~6,800 books) — letting the CLI start uploading
+        the first book before the entire sweep completes keeps memory
+        bounded and shifts a long backfill from "sweep 2h, then upload
+        4h" to "interleave both, finish in roughly the slower of the two".
+
+        Default implementation materialises :meth:`get_law_books` and
+        yields from it, preserving compatibility for providers that
+        don't benefit from streaming.
+        """
+        yield from self.get_law_books()
+
 
 class CaseProvider(Provider):
     """Base class for case data providers."""

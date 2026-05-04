@@ -9,8 +9,10 @@ MAX_RETRIES = 5
 INITIAL_BACKOFF = 1  # seconds
 DEFAULT_TIMEOUT = (10, 120)  # (connect, read) seconds
 
-# HTTP status codes that trigger a retry
-_RETRYABLE_STATUS_CODES = (429, 503)
+# HTTP status codes that trigger a retry. Includes 502/504 so a single
+# transient gateway hiccup (nginx upstream restart, 30s gateway timeout
+# during a slow Django request) doesn't drop a good upload.
+_RETRYABLE_STATUS_CODES = (429, 502, 503, 504)
 
 
 def _retry_delay(resp: requests.Response, attempt: int) -> float:

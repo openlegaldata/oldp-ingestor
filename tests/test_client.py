@@ -193,6 +193,43 @@ def test_client_post_retries_503(monkeypatch):
     assert call_count[0] == 2
 
 
+def test_client_post_retries_502_and_504(monkeypatch):
+    """POST retries on 502/504 (gateway transients) then succeeds."""
+    for status in (502, 504):
+        call_count = [0]
+
+        class RespErr:
+            status_code = status
+            headers = {}
+
+            def raise_for_status(self):
+                raise requests.HTTPError(response=self)
+
+        class Resp201:
+            status_code = 201
+            headers = {}
+
+            def json(self):
+                return {"id": 1}
+
+            def raise_for_status(self):
+                pass
+
+        def mock_request(method, url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return RespErr()
+            return Resp201()
+
+        client = OLDPClient(api_url="http://localhost:8000")
+        monkeypatch.setattr(client.session, "request", mock_request)
+        monkeypatch.setattr("oldp_ingestor.client.time.sleep", lambda s: None)
+
+        result = client.post("/api/test/", data={})
+        assert result == {"id": 1}, f"status={status} did not retry"
+        assert call_count[0] == 2, f"status={status} expected 2 calls"
+
+
 def test_client_post_retries_connection_error(monkeypatch):
     """POST retries on ConnectionError then succeeds."""
     call_count = [0]

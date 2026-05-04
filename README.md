@@ -7,6 +7,7 @@ Data sources:
 | CLI provider | Type | Source |
 |---|---|---|
 | `ris` | laws + cases | Rechtsinformationssystem des Bundes (RIS) |
+| `gii` | laws | Gesetze im Internet (gesetze-im-internet.de) |
 | `rii` | cases | Rechtsprechung im Internet (RII) — federal courts |
 | `by` | cases | Gesetze Bayern — Bavarian courts |
 | `nrw` | cases | NRWE Rechtsprechungsdatenbank — NRW courts |
@@ -94,9 +95,11 @@ oldp-ingestor laws --provider ris --date-from 2025-01-01 --date-to 2025-06-30
 oldp-ingestor laws --provider ris --request-delay 0.5
 ```
 
-For automated cron usage, see `dev-deployment/ingest-ris.sh` (laws) and
-`dev-deployment/ingest-ris-cases.sh` (cases) which track the last successful
-run date in a state file and pass it as `--date-from` on subsequent runs.
+#### From gesetze-im-internet.de (`gii`)
+
+Pulls all German federal laws from the official BMJ/juris feed. See
+[docs/providers/de/gii.md](docs/providers/de/gii.md) for usage,
+incremental-run setup, and continuous-ingestion examples.
 
 #### From a JSON fixture file (dummy provider)
 
@@ -189,9 +192,13 @@ See [docs/politeness.md](docs/politeness.md) for details.
 
 ### Provider docs
 
+Detailed documentation about each provider can be found in
+[docs/providers/](docs/providers/).
+
 | Provider | Doc |
 |----------|-----|
 | RIS (laws + cases) | [docs/providers/de/ris.md](docs/providers/de/ris.md) |
+| GII (laws) | [docs/providers/de/gii.md](docs/providers/de/gii.md) |
 | RII (federal courts) | [docs/providers/de/rii.md](docs/providers/de/rii.md) |
 | Bayern | [docs/providers/de/by.md](docs/providers/de/by.md) |
 | NRW | [docs/providers/de/nrw.md](docs/providers/de/nrw.md) |
