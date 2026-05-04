@@ -15,6 +15,10 @@ from oldp_ingestor.court_analysis import (
     parse_missing_courts,
 )
 from oldp_ingestor.providers.base import CaseProvider, LawProvider
+from oldp_ingestor.providers.failure_tracker import (
+    FailureTracker,
+    NullFailureTracker,
+)
 from oldp_ingestor.validation import validate_case
 from oldp_ingestor.results import (
     check_health,
@@ -56,6 +60,40 @@ def _write_result_and_return(
     if status == "error":
         return 2
     return 1 if errors > 0 else 0
+
+
+def _attach_failure_tracker(args, provider, provider_name: str) -> None:
+    """Attach a real :class:`FailureTracker` to *provider* if --state-dir is set.
+
+    Otherwise the provider keeps the no-op tracker from the base class and
+    behaves exactly as before. Failures during tracker setup are logged and
+    swallowed — a missing/locked state dir must not break ingestion.
+    """
+    state_dir = getattr(args, "state_dir", "") or ""
+    if not state_dir:
+        provider.failure_tracker = NullFailureTracker()
+        return
+    try:
+        provider.failure_tracker = FailureTracker(
+            state_dir=state_dir,
+            provider=provider_name,
+            max_retries=getattr(args, "max_doc_retries", 5),
+        )
+        stats = provider.failure_tracker.stats()
+        if stats["tracked"]:
+            logger.info(
+                "FailureTracker[%s]: %d doc(s) tracked, %d at retry limit",
+                provider_name,
+                stats["tracked"],
+                stats["exhausted"],
+            )
+    except Exception as exc:
+        logger.warning(
+            "Could not initialise FailureTracker for %s: %s — running without it",
+            provider_name,
+            exc,
+        )
+        provider.failure_tracker = NullFailureTracker()
 
 
 def _save_failed_cases(results_dir, provider, failed_cases):
@@ -113,6 +151,7 @@ def cmd_laws(args):
     try:
         sink = _make_sink(args)
         provider = _make_law_provider(args)
+        _attach_failure_tracker(args, provider, args.provider)
 
         logger.info(
             "Streaming law books from provider '%s' (interleaved upload)...",
@@ -307,6 +346,7 @@ def cmd_cases(args):
     try:
         sink = _make_sink(args)
         provider = _make_case_provider(args)
+        _attach_failure_tracker(args, provider, args.provider)
         batch_size = max(1, getattr(args, "batch_size", 100) or 100)
 
         logger.info(
@@ -402,6 +442,15 @@ def cmd_cases(args):
             cases_invalid,
             cases_errors,
         )
+
+        tracker_stats = provider.failure_tracker.stats()
+        if tracker_stats["tracked"]:
+            logger.info(
+                "FailureTracker[%s]: %d doc(s) tracked, %d at retry limit",
+                args.provider,
+                tracker_stats["tracked"],
+                tracker_stats["exhausted"],
+            )
 
         if cases_errors > 0:
             status = "partial"
@@ -799,6 +848,22 @@ def main():
         default=5,
         help="After this many consecutive fully-failed calls to the same host, "
         "abort the run with BlockedHostError (0 = disabled, default: 5).",
+    )
+    parser.add_argument(
+        "--state-dir",
+        default=os.environ.get("OLDP_STATE_DIR", ""),
+        help="Directory holding cross-run provider state (e.g. per-doc retry "
+        "counters in failures_<provider>.json). Empty disables persistent "
+        "skip-on-repeat-failure (env: OLDP_STATE_DIR).",
+    )
+    parser.add_argument(
+        "--max-doc-retries",
+        type=int,
+        default=int(os.environ.get("OLDP_MAX_DOC_RETRIES", "5")),
+        help="After this many failed parse attempts on the same upstream "
+        "document, skip it on subsequent runs. Requires --state-dir to "
+        "persist. 0 = track but never skip (env: OLDP_MAX_DOC_RETRIES, "
+        "default: 5).",
     )
     subparsers = parser.add_subparsers(dest="command")
 

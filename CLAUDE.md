@@ -262,6 +262,18 @@ make ingest CMD=cases PROV=rii     # run single provider
 make ingest-all                    # run all providers
 ```
 
+## Per-document retry tracking
+
+`providers/failure_tracker.py` persists per-(provider, doc_id) failure counts
+to `<state-dir>/failures_<provider>.json`. After `max_retries` consecutive
+parse failures the tracker's `should_skip()` returns True and the provider
+short-circuits the fetch. Successful parse clears the entry.
+
+- Enable via `--state-dir` / `OLDP_STATE_DIR`. Default `--max-doc-retries=5`.
+- Network errors / 5xx / EUR-Lex 202 / WAF challenges are NOT counted (transient).
+- Wired into: `by`, `rii`, `nrw`, `ns`, `eu`, `sn-ovg`, `sn-verfgh`.
+- Default for un-wired providers: `NullFailureTracker` (no-op).
+
 ## Common pitfalls
 
 1. **Courts endpoint format**: Returns plain list `[{id, label}]`, not hydra collection

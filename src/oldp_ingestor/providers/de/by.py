@@ -242,6 +242,9 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
             logger.info("Page %d: found %d doc IDs", page, len(ids))
 
             for doc_id in ids:
+                if self.failure_tracker.should_skip(doc_id):
+                    continue
+
                 zip_url = self._get_zip_url(doc_id)
                 try:
                     xml_str = self._get_xml_from_zip(zip_url, encoding="utf-8-sig")
@@ -250,6 +253,8 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
                     try:
                         xml_str = self._get_xml_from_zip(zip_url, encoding="iso-8859-1")
                     except requests.RequestException as exc:
+                        # Network failures are not counted toward retry limit:
+                        # they're host-level and likely transient.
                         logger.warning("Failed to download ZIP for %s: %s", doc_id, exc)
                         continue
                 except requests.RequestException as exc:
@@ -264,9 +269,11 @@ class ByCaseProvider(ScraperBaseClient, CaseProvider):
                     case = self._parse_case_from_xml(xml_str, source_url)
                 except Exception as exc:
                     logger.warning("Failed to parse XML for %s: %s", doc_id, exc)
+                    self.failure_tracker.record_failure(doc_id, exc)
                     continue
 
                 if case is not None:
+                    self.failure_tracker.record_success(doc_id)
                     cases.append(case)
 
                 if self.limit and len(cases) >= self.limit:

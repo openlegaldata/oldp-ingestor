@@ -1,7 +1,18 @@
+from oldp_ingestor.providers.failure_tracker import (
+    FailureTracker,
+    NullFailureTracker,
+)
+
+
 class Provider:
     """Base class for all data providers."""
 
-    pass
+    # Default no-op tracker; CLI replaces with a real ``FailureTracker``
+    # when ``--state-dir`` is configured. Providers can call
+    # ``self.failure_tracker.should_skip(doc_id)`` / ``record_failure(...)``
+    # / ``record_success(...)`` unconditionally — see
+    # ``providers/failure_tracker.py``.
+    failure_tracker: FailureTracker | NullFailureTracker = NullFailureTracker()
 
 
 class LawProvider(Provider):
