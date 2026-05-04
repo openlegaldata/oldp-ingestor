@@ -113,14 +113,19 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
                 ids.append(doc_id)
         return ids
 
-    def _fetch_document(self, doc_id: str) -> dict | None:
-        """Fetch document detail page and extract case data."""
+    def _fetch_document(self, doc_id: str) -> tuple[dict | None, bool]:
+        """Fetch document detail page and extract case data.
+
+        Returns ``(case_or_None, permanent_failure)`` so the caller can
+        feed permanent failures into the FailureTracker without burning
+        retry slots on transient network errors.
+        """
         url = f"/document.phtml?id={doc_id}"
         try:
             resp = self._get(url)
         except requests.RequestException as exc:
             logger.warning("Failed to fetch document %s: %s", doc_id, exc)
-            return None
+            return None, False  # network → transient
 
         tree = lxml.html.fromstring(resp.text)
 
@@ -128,7 +133,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         header_div = tree.xpath('//td[@class="schattiert gross"]//div[@style]')
         if not header_div:
             logger.warning("No header found for document %s", doc_id)
-            return None
+            return None, True
 
         from lxml import etree
 
@@ -141,7 +146,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
             logger.warning(
                 "Incomplete header for document %s: %s", doc_id, header_lines
             )
-            return None
+            return None, True
 
         court_name = header_lines[0]
         case_type = header_lines[1]
@@ -154,11 +159,11 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         date_raw = date_cells[0].strip() if date_cells else ""
         date = self.parse_german_date(date_raw) if date_raw else ""
 
-        # Client-side date filtering
+        # Client-side date filtering — out-of-window is not a failure
         if self.date_from and date and date < self.date_from:
-            return None
+            return None, False
         if self.date_to and date and date > self.date_to:
-            return None
+            return None, False
 
         # Leitsatz: text after "Leitsatz:" in the dedicated table row
         abstract = None
@@ -180,16 +185,23 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
 
         # Fetch PDF content
         content = ""
+        pdf_failed = False
         if pdf_link:
             pdf_url = f"{SN_OVG_BASE_URL}/{pdf_link}"
             try:
                 content = self._extract_text_from_pdf(pdf_url)
+            except requests.RequestException as exc:
+                # Upstream 5xx / network — transient, retry next run.
+                logger.warning("Failed to extract PDF for %s: %s", file_number, exc)
+                pdf_failed = True
             except Exception as exc:
                 logger.warning("Failed to extract PDF for %s: %s", file_number, exc)
 
         if not content or len(content) < 10:
             logger.debug("No content for document %s, skipping", doc_id)
-            return None
+            # If the PDF was a network failure leave it transient; otherwise
+            # the document page genuinely has no/short content (permanent).
+            return None, not pdf_failed
 
         case: dict = {
             "court_name": court_name,
@@ -205,7 +217,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         if abstract:
             case["abstract"] = abstract
 
-        return case
+        return case, False
 
     def get_cases(self) -> list[dict]:
         """Search OVG and fetch individual document pages."""
@@ -221,14 +233,23 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         logger.info("Found %d document(s)", len(doc_ids))
 
         for doc_id in doc_ids:
+            if self.failure_tracker.should_skip(doc_id):
+                continue
+
             try:
-                case = self._fetch_document(doc_id)
+                case, permanent_failure = self._fetch_document(doc_id)
             except Exception as exc:
                 logger.warning("Failed to process document %s: %s", doc_id, exc)
+                self.failure_tracker.record_failure(doc_id, exc)
                 continue
 
             if case is not None:
+                self.failure_tracker.record_success(doc_id)
                 cases.append(case)
+            elif permanent_failure:
+                self.failure_tracker.record_failure(
+                    doc_id, "structural failure parsing document"
+                )
 
             if self.limit and len(cases) >= self.limit:
                 break

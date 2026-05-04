@@ -378,6 +378,9 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
         Returns True if the limit was reached.
         """
         for doc_id in ids:
+            if self.failure_tracker.should_skip(doc_id):
+                continue
+
             xml_str = self._get_xml_for_doc(doc_id)
             if xml_str is None:
                 continue
@@ -387,6 +390,7 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
                 case = self._parse_case_from_xml(xml_str, source_url=zip_url)
             except Exception as exc:
                 logger.warning("Failed to parse XML for %s: %s", doc_id, exc)
+                self.failure_tracker.record_failure(doc_id, exc)
                 continue
 
             if case is None:
@@ -396,6 +400,7 @@ class RiiCaseProvider(ScraperBaseClient, PlaywrightBaseClient, CaseProvider):
             if not self._is_within_date_range(case.get("date", "")):
                 continue
 
+            self.failure_tracker.record_success(doc_id)
             cases.append(case)
 
             if self.limit and len(cases) >= self.limit:

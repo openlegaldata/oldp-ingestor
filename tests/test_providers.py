@@ -5215,9 +5215,10 @@ def test_sn_ovg_parse_document():
     provider._request_with_retry = lambda *a, **kw: FakeResp()
     provider._extract_text_from_pdf = lambda url: "<p>PDF text from OVG</p>"
 
-    case = provider._fetch_document("7816")
+    case, permanent = provider._fetch_document("7816")
 
     assert case is not None
+    assert permanent is False
     assert case["court_name"] == "Sächsisches Oberverwaltungsgericht Bautzen"
     assert case["file_number"] == "3 C 90/21"
     assert case["date"] == "2026-02-02"
@@ -5320,8 +5321,10 @@ def test_sn_ovg_document_no_pdf_skips():
     provider._request_with_retry = lambda *a, **kw: FakeResp()
     provider._extract_text_from_pdf = lambda url: ""  # empty
 
-    case = provider._fetch_document("1")
+    case, permanent = provider._fetch_document("1")
     assert case is None
+    # No PDF / empty content is structural → permanent failure
+    assert permanent is True
 
 
 def test_sn_ovg_get_cases_with_mock(monkeypatch):

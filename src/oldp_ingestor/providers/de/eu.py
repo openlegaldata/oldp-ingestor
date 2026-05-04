@@ -212,11 +212,19 @@ OFFSET {offset}"""
 
         return results
 
-    def _try_fetch_html(self, url: str, celex: str) -> str | None:
+    def _try_fetch_html(self, url: str, celex: str) -> tuple[str | None, bool]:
         """Try to fetch and parse HTML content from a URL.
 
-        Returns extracted body HTML, or None on failure (HTTP error, WAF
-        block, short content, parse error).
+        Returns ``(content, permanent_failure)``:
+          * success: ``(html, False)``
+          * transient (status 202 still-processing, WAF challenge,
+            connection error): ``(None, False)`` — eligible for retry
+            next run, no count against the retry budget
+          * permanent (404, non-2xx that isn't 202, parse error,
+            content shorter than threshold but a 200 response):
+            ``(None, True)`` — counted against the retry budget so
+            permanently-broken CELEX numbers eventually stop being
+            re-fetched.
         """
         try:
             resp = self._get(
@@ -226,37 +234,62 @@ OFFSET {offset}"""
             logger.warning(
                 "Failed to fetch HTML for CELEX %s from %s: %s", celex, url, exc
             )
-            return None
+            return None, False  # network errors are transient
 
-        if resp.status_code != 200 or len(resp.text) < EURLEX_MIN_CONTENT_LEN:
+        # 202 = "document still being prepared by EUR-Lex" — comes back
+        # later. Don't burn a retry slot.
+        if resp.status_code == 202:
             logger.warning(
                 "Empty/missing content for CELEX %s (status %d, url %s)",
                 celex,
                 resp.status_code,
                 url,
             )
-            return None
+            return None, False
+
+        if resp.status_code != 200:
+            logger.warning(
+                "Failed to fetch HTML for CELEX %s from %s: %d Client Error: %s "
+                "for url: %s",
+                celex,
+                url,
+                resp.status_code,
+                resp.reason,
+                url,
+            )
+            return None, True  # 4xx/5xx other than 202 → permanent
 
         # Detect AWS WAF challenge page (returns 200 but with JS challenge)
         if "aws-waf-token" in resp.text:
             logger.warning("WAF challenge detected for CELEX %s at %s", celex, url)
-            return None
+            return None, False  # WAF clears, retry next run
+
+        if len(resp.text) < EURLEX_MIN_CONTENT_LEN:
+            logger.warning(
+                "Empty/missing content for CELEX %s (status %d, url %s)",
+                celex,
+                resp.status_code,
+                url,
+            )
+            return None, True
 
         try:
-            return _extract_html_content(resp.text, url)
+            return _extract_html_content(resp.text, url), False
         except Exception as exc:
             logger.warning("Failed to parse HTML for CELEX %s: %s", celex, exc)
-            return None
+            return None, True
 
-    def _fetch_case_content(self, celex: str) -> tuple[str, str] | None:
+    def _fetch_case_content(self, celex: str) -> tuple[tuple[str, str] | None, bool]:
         """Fetch HTML full text for a CELEX number.
 
         Tries EUR-Lex first (primary source), falls back to CELLAR if
         EUR-Lex fails (e.g. WAF returns). Strips ``_RES`` suffix from
         CELEX before constructing URLs (these variants always 404).
 
-        Returns ``(content, source_url)`` for the URL that served the
-        content, or ``None`` on failure.
+        Returns ``(payload, permanent_failure)``:
+          * ``payload = (content, source_url)`` on success, ``None`` otherwise.
+          * ``permanent_failure = True`` only when *both* sources gave a
+            permanent failure; if either was transient we'll keep retrying.
         """
         # Strip _RES suffix (always 404s on both EUR-Lex and CELLAR)
         base_celex = re.sub(r"_RES$", "", celex)
@@ -265,16 +298,17 @@ OFFSET {offset}"""
         eurlex_url = (
             f"{EURLEX_BASE_URL}/legal-content/DE/TXT/HTML/?uri=CELEX:{base_celex}"
         )
-        content = self._try_fetch_html(eurlex_url, base_celex)
+        content, eurlex_permanent = self._try_fetch_html(eurlex_url, base_celex)
         if content is not None:
-            return content, eurlex_url
+            return (content, eurlex_url), False
 
         # Fallback to CELLAR if EUR-Lex fails
         cellar_url = f"{CELLAR_BASE_URL}/resource/celex/{base_celex}"
-        content = self._try_fetch_html(cellar_url, base_celex)
+        content, cellar_permanent = self._try_fetch_html(cellar_url, base_celex)
         if content is not None:
-            return content, cellar_url
-        return None
+            return (content, cellar_url), False
+
+        return None, eurlex_permanent and cellar_permanent
 
     def get_cases(self) -> list[dict]:
         """Fetch cases from EUR-Lex: SPARQL search -> EUR-Lex HTML content.
@@ -296,14 +330,24 @@ OFFSET {offset}"""
                 logger.warning("No CELEX for %s, skipping", ecli)
                 continue
 
-            fetched = self._fetch_case_content(celex)
+            if self.failure_tracker.should_skip(celex):
+                continue
+
+            fetched, permanent_failure = self._fetch_case_content(celex)
             if fetched is None:
+                if permanent_failure:
+                    self.failure_tracker.record_failure(
+                        celex, "fetch+fallback both returned permanent failure"
+                    )
                 continue
             content, source_url = fetched
 
             if len(content) < EURLEX_MIN_CONTENT_LEN:
                 logger.warning(
                     "Skipping %s: content too short (%d chars)", ecli, len(content)
+                )
+                self.failure_tracker.record_failure(
+                    celex, f"content too short ({len(content)} chars)"
                 )
                 continue
 
@@ -324,6 +368,7 @@ OFFSET {offset}"""
             if case_type:
                 case["type"] = case_type
 
+            self.failure_tracker.record_success(celex)
             cases.append(case)
 
             if self.limit and len(cases) >= self.limit:

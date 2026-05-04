@@ -175,23 +175,31 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
 
             for doc_path in links:
                 case_url = f"{NS_BASE_URL}{doc_path}"
+                if self.failure_tracker.should_skip(doc_path):
+                    continue
+
                 try:
                     html_str = self._get(doc_path).text
                 except requests.RequestException as exc:
                     logger.warning("Failed to fetch case %s: %s", case_url, exc)
-                    continue
+                    continue  # network → transient
 
                 try:
                     case = self._parse_case_from_html(html_str, case_url)
                 except Exception as exc:
                     logger.warning("Failed to parse case %s: %s", case_url, exc)
+                    self.failure_tracker.record_failure(doc_path, exc)
                     continue
 
                 if case is None:
+                    self.failure_tracker.record_failure(
+                        doc_path, "unparseable case page"
+                    )
                     continue
                 if not self._is_within_date_range(case.get("date", "")):
                     continue
 
+                self.failure_tracker.record_success(doc_path)
                 yield case
                 yielded += 1
 

@@ -216,6 +216,9 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
             logger.info("Page %d: found %d case links", page, len(links))
 
             for case_url in links:
+                if self.failure_tracker.should_skip(case_url):
+                    continue
+
                 try:
                     html_str = self._get(case_url).text
                 except requests.RequestException as exc:
@@ -226,12 +229,25 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
                     case = self._parse_case_from_html(html_str, case_url)
                 except Exception as exc:
                     logger.warning("Failed to parse case %s: %s", case_url, exc)
+                    self.failure_tracker.record_failure(case_url, exc)
                     continue
 
-                if case is not None:
-                    if not self._is_within_date_range(case.get("date", "")):
-                        continue
-                    cases.append(case)
+                if case is None:
+                    # Parser logged the specific reason (missing content,
+                    # missing court etc.). Treat as a structural failure
+                    # of this URL and count it toward the retry budget.
+                    self.failure_tracker.record_failure(
+                        case_url, "unparseable case page"
+                    )
+                    continue
+
+                if not self._is_within_date_range(case.get("date", "")):
+                    # Out-of-window for this run, but the doc parsed fine —
+                    # don't treat that as a failure.
+                    continue
+
+                self.failure_tracker.record_success(case_url)
+                cases.append(case)
 
                 if self.limit and len(cases) >= self.limit:
                     return cases

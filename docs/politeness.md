@@ -51,6 +51,61 @@ the exponential backoff (with a minimum of 1 second).
   the entire run.
 - **Failed detail fetches** cause the case to be ingested without an abstract.
 
+## Per-document retry tracking
+
+Some upstreams hand us individual documents that are permanently corrupt
+(truncated XML, missing PDFs, deleted-but-still-listed entries). Without state,
+every cron run re-discovers the same broken doc, fails to parse it, logs a
+warning, and tries again next run forever — masking "gone" as recurring noise
+and wasting upstream requests.
+
+The `FailureTracker` (`providers/failure_tracker.py`) persists a per-provider
+JSON file mapping a stable `doc_id` (e.g. BY's document ID, EU's CELEX,
+NRW's case URL) to attempt count + last error. After `max_retries` consecutive
+failures, the tracker's `should_skip(doc_id)` returns `True` and the provider
+short-circuits before re-fetching. A successful parse of the same doc in any
+later run clears the entry (so a transient upstream regression auto-heals).
+
+### Enable
+
+```bash
+oldp-ingestor --state-dir /var/lib/oldp/state cases --provider by
+# or env vars:
+export OLDP_STATE_DIR=/var/lib/oldp/state
+export OLDP_MAX_DOC_RETRIES=5  # default
+```
+
+When `--state-dir` is unset (the default), the tracker is a no-op — providers
+behave exactly as before.
+
+### What is and isn't counted
+
+Network errors, HTTP 5xx, and known-transient signals (EUR-Lex `202 Accepted`,
+WAF challenge pages) are **not** counted toward the retry budget. Only structural
+failures — XML/HTML parse errors, missing required fields, content shorter than
+the minimum threshold — increment the counter, because those are the failure
+modes that won't fix themselves on the next run.
+
+### State files
+
+```
+<state-dir>/
+  failures_by.json
+  failures_rii.json
+  failures_eu.json
+  ...
+```
+
+Each file is a flat JSON object keyed by `doc_id`. Wiping a file resets all
+retry counters for that provider.
+
+### Wired-in providers
+
+`by`, `rii`, `nrw`, `ns`, `eu`, `sn-ovg`, `sn-verfgh`. Other providers inherit
+the no-op default and can be wired in with the same three-call pattern:
+`should_skip()` before fetch, `record_failure()` on permanent parse error,
+`record_success()` on successful parse.
+
 ## Cron operation
 
 For production use, wrap the ingestor in a cron-friendly script that tracks

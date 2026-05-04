@@ -225,21 +225,38 @@ class SnVerfghCaseProvider(ScraperBaseClient, CaseProvider):
                 logger.debug("No PDF link for %s, skipping", entry["file_number"])
                 continue
 
+            # File number is the stable per-doc key; the PDF URL changes
+            # as the upstream re-numbers attachments.
+            doc_id = entry["file_number"]
+            if self.failure_tracker.should_skip(doc_id):
+                continue
+
             pdf_url = f"{SN_VERFGH_BASE_URL}/{pdf_link}"
             try:
                 content = self._extract_text_from_pdf(pdf_url)
-            except Exception as exc:
+            except requests.RequestException as exc:
+                # Upstream 5xx / network — transient.
                 logger.warning(
                     "Failed to extract PDF for %s: %s", entry["file_number"], exc
                 )
                 continue
+            except Exception as exc:
+                logger.warning(
+                    "Failed to extract PDF for %s: %s", entry["file_number"], exc
+                )
+                self.failure_tracker.record_failure(doc_id, exc)
+                continue
 
             if not content or len(content) < 10:
                 logger.debug("No content for %s, skipping", entry["file_number"])
+                self.failure_tracker.record_failure(
+                    doc_id, "PDF produced no/short content"
+                )
                 continue
 
             entry["content"] = content
             entry["source_url"] = pdf_url
+            self.failure_tracker.record_success(doc_id)
             cases.append(entry)
 
             if self.limit and len(cases) >= self.limit:
