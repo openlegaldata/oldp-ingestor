@@ -26,6 +26,8 @@ jobs:
       new_version: ${{ steps.bump.outputs.new_version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PUBLISH_TOKEN }}
 
       - uses: astral-sh/setup-uv@v6
 
