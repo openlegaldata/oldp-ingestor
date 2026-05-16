@@ -17,6 +17,7 @@ import re
 from urllib.parse import urljoin
 
 import lxml.html
+import requests
 from lxml import etree
 
 from oldp_ingestor.providers.base import CaseProvider
@@ -148,6 +149,13 @@ OFFSET {offset}"""
         """Search CELLAR SPARQL endpoint for ECLI identifiers and metadata.
 
         Returns list of dicts with keys: ecli, date, celex.
+
+        The CELLAR SPARQL endpoint is known to drop TLS connections
+        mid-read (observed in prod 2026-05-16 04:15 UTC). A failed page
+        request is treated as end-of-run: we return whatever pages have
+        already been collected so the rest of ``get_cases()`` can proceed
+        and cron picks up next time. The exception is logged at WARNING
+        so genuine outages are still visible.
         """
         results: list[dict] = []
         offset = 0
@@ -157,12 +165,46 @@ OFFSET {offset}"""
             page_size = min(EURLEX_SPARQL_PAGE_SIZE, effective_limit - len(results))
             query = self._build_sparql_query(page_size, offset)
 
-            resp = self._get(
-                CELLAR_SPARQL_URL,
-                params={"query": query, "format": "application/json"},
-            )
+            try:
+                resp = self._get(
+                    CELLAR_SPARQL_URL,
+                    params={"query": query, "format": "application/json"},
+                )
+            except (
+                requests.RequestException,
+                ConnectionError,
+                TimeoutError,
+                OSError,
+            ) as exc:
+                # Transient network failure (TLS reset, DNS, timeout, ...).
+                # Treat as end-of-run: keep pages already collected and let
+                # the caller process them. Cron will retry next run.
+                logger.warning(
+                    "SPARQL fetch failed at offset %d for %s: %s: %s — "
+                    "treating as end-of-run, returning %d ECLI(s) collected so far",
+                    offset,
+                    CELLAR_SPARQL_URL,
+                    type(exc).__name__,
+                    exc,
+                    len(results),
+                )
+                break
 
-            data = resp.json()
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                # Malformed/partial JSON body — treat the same as a network
+                # drop: end the run cleanly with what we have.
+                logger.warning(
+                    "SPARQL response was not valid JSON at offset %d for %s: %s — "
+                    "treating as end-of-run, returning %d ECLI(s) collected so far",
+                    offset,
+                    CELLAR_SPARQL_URL,
+                    exc,
+                    len(results),
+                )
+                break
+
             bindings = data.get("results", {}).get("bindings", [])
 
             if not bindings:
