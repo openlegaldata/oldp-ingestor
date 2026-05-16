@@ -4713,6 +4713,111 @@ def test_eu_get_cases_skips_short_content(monkeypatch):
     assert len(cases) == 0
 
 
+def test_eu_get_cases_sparql_connection_error_returns_empty(monkeypatch):
+    """A SPARQL ConnectionError on the first page must NOT propagate.
+
+    Regression test for prod incident 2026-05-16 04:15 UTC: TLS connection
+    to publications.europa.eu was dropped mid-read during the very first
+    SPARQL fetch and the bare requests exception killed the whole
+    ``cases eu`` run (0 cases ingested). The provider should now log and
+    return an empty list instead.
+    """
+    import requests
+
+    from oldp_ingestor.providers.de.eu import EuCaseProvider
+
+    def mock_request(self, method, url, **kwargs):
+        if "sparql" in url:
+            raise requests.ConnectionError("Connection reset by peer")
+        raise AssertionError(f"Unexpected URL requested: {url}")
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(request_delay=0)
+    # Must not raise — defensive handling treats SPARQL failure as end-of-run.
+    cases = provider.get_cases()
+    assert cases == []
+
+
+def test_eu_search_eclis_returns_partial_on_midrun_connection_error(monkeypatch):
+    """A SPARQL ConnectionError on page 2 should return page-1 results.
+
+    Mirrors the prod symptom but on a later page: the run keeps whatever
+    ECLIs it managed to collect before the drop instead of losing them.
+    """
+    import json
+
+    import requests
+
+    from oldp_ingestor.providers.de.eu import EURLEX_SPARQL_PAGE_SIZE, EuCaseProvider
+
+    # First page: full page of bindings so the loop tries page 2.
+    page_one_bindings = [
+        {
+            "ecli": {"value": f"ECLI:EU:C:2024:{i}"},
+            "date": {"value": "2024-05-20"},
+            "celex": {"value": f"62024CJ{i:04d}"},
+        }
+        for i in range(EURLEX_SPARQL_PAGE_SIZE)
+    ]
+    page_one = json.dumps({"results": {"bindings": page_one_bindings}})
+
+    call_count = {"n": 0}
+
+    class FakeResp:
+        status_code = 200
+        text = page_one
+        content = page_one.encode("utf-8")
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.text)
+
+    def mock_request(self, method, url, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return FakeResp()
+        raise requests.ConnectionError("TLS connection dropped mid-read")
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(request_delay=0)
+    eclis = provider._search_eclis()
+
+    # Page 1 results retained; page-2 failure swallowed.
+    assert len(eclis) == EURLEX_SPARQL_PAGE_SIZE
+    assert eclis[0]["ecli"] == "ECLI:EU:C:2024:0"
+
+
+def test_eu_get_cases_sparql_invalid_json_returns_empty(monkeypatch):
+    """A truncated/partial JSON body should be treated as end-of-run."""
+    from oldp_ingestor.providers.de.eu import EuCaseProvider
+
+    class FakeResp:
+        status_code = 200
+        text = "<html>oops, gateway error page, not JSON</html>"
+        content = text.encode("utf-8")
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            import json as _json
+
+            return _json.loads(self.text)
+
+    def mock_request(self, method, url, **kwargs):
+        return FakeResp()
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(request_delay=0)
+    cases = provider.get_cases()
+    assert cases == []
+
+
 def test_eu_multiple_file_numbers_from_title():
     """Multiple file number matches in title should be joined with comma."""
     from oldp_ingestor.providers.de.eu import _parse_case_details_from_xml
