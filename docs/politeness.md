@@ -17,12 +17,39 @@ oldp-ingestor cases --provider ris --request-delay 0.5
 
 ## User-Agent
 
-The session sends a descriptive `User-Agent` header so the API operator can
-identify the client:
+Every outbound request — both to upstream providers and to the OLDP API —
+carries a `User-Agent` that identifies *your* deployment, not a generic
+`oldp-ingestor` string. You **must** provide a name and a contact (URL or
+email) for any subcommand that touches the network (`info`, `laws`, `cases`,
+`replay`); the ingestor refuses to start otherwise.
+
+```bash
+oldp-ingestor \
+  --user-agent-name acme-research-bot \
+  --user-agent-contact https://acme.example/bot \
+  cases --provider ris
+
+# or via environment (recommended for cron / .env files):
+export OLDP_USER_AGENT_NAME=acme-research-bot
+export OLDP_USER_AGENT_CONTACT=ops@acme.example   # email also accepted
+```
+
+The header is assembled as:
 
 ```
-oldp-ingestor/0.1.0 (+https://github.com/openlegaldata)
+<name> (<contact>; via oldp-ingestor/<pkg-version>[+<git-short-sha>])
 ```
+
+For example:
+
+```
+acme-research-bot (https://acme.example/bot; via oldp-ingestor/0.1.4+a1b2c3d)
+```
+
+The contact must be a `http(s)://` URL or contain an `@` and a dotted host;
+junk strings are rejected at startup so providers always get a way to reach
+you about traffic. `status` and `analyze-courts` don't hit the network and
+don't require either value.
 
 ## Retry with backoff
 

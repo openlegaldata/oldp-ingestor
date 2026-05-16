@@ -14,8 +14,8 @@ from requests import Response
 logger = logging.getLogger(__name__)
 
 
-def _build_user_agent() -> str:
-    """Build user agent string from package version and git commit hash."""
+def _ingestor_suffix() -> str:
+    """Return ``via oldp-ingestor/<version>[+<sha>]`` for the UA tail."""
     try:
         ver = version("oldp-ingestor")
     except Exception:
@@ -32,18 +32,71 @@ def _build_user_agent() -> str:
         )
     except Exception:
         commit = ""
-    ua = f"oldp-ingestor/{ver}"
+    suffix = f"via oldp-ingestor/{ver}"
     if commit:
-        ua += f"+{commit}"
-    ua += (
-        " (research; non-commercial; "
-        "+https://github.com/openlegaldata/oldp-ingestor; "
-        "contact: https://openlegaldata.io)"
-    )
-    return ua
+        suffix += f"+{commit}"
+    return suffix
 
 
-USER_AGENT = _build_user_agent()
+class UserAgentError(ValueError):
+    """Raised when name/contact are missing or contact has an invalid format."""
+
+
+def validate_contact(contact: str) -> str:
+    """Return ``contact`` if it looks like a URL or email, else raise."""
+    c = (contact or "").strip()
+    if not c:
+        raise UserAgentError("user-agent contact is empty")
+    is_url = c.startswith(("http://", "https://"))
+    is_email = "@" in c and "." in c.split("@", 1)[1]
+    if not (is_url or is_email):
+        raise UserAgentError(
+            f"user-agent contact must be a URL (http(s)://...) or email "
+            f"(user@host.tld); got: {c!r}"
+        )
+    return c
+
+
+def _build_user_agent(name: str, contact: str) -> str:
+    """Build ``<name> (<contact>; via oldp-ingestor/<ver>[+<sha>])``."""
+    n = (name or "").strip()
+    if not n:
+        raise UserAgentError("user-agent name is empty")
+    c = validate_contact(contact)
+    return f"{n} ({c}; {_ingestor_suffix()})"
+
+
+_USER_AGENT: str | None = None
+
+
+def configure_user_agent(name: str, contact: str) -> str:
+    """Validate name/contact, store the assembled UA process-wide, return it.
+
+    Must be called before any HttpBaseClient or OLDPClient is constructed
+    that performs network I/O. Raises UserAgentError on bad input.
+    """
+    global _USER_AGENT
+    _USER_AGENT = _build_user_agent(name, contact)
+    return _USER_AGENT
+
+
+def get_user_agent() -> str:
+    """Return the configured UA or raise if configure_user_agent wasn't called."""
+    if _USER_AGENT is None:
+        raise UserAgentError(
+            "User-Agent is not configured. Pass --user-agent-name and "
+            "--user-agent-contact (or set OLDP_USER_AGENT_NAME and "
+            "OLDP_USER_AGENT_CONTACT) before making network requests."
+        )
+    return _USER_AGENT
+
+
+def _reset_user_agent_for_tests() -> None:
+    """Test-only: clear the configured UA so re-configuration can be exercised."""
+    global _USER_AGENT
+    _USER_AGENT = None
+
+
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 1  # seconds
 REQUEST_JITTER_FRAC = 0.2  # ±20% random jitter on request_delay
@@ -178,7 +231,7 @@ class HttpBaseClient:
             else _DEFAULT_CB_THRESHOLD
         )
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = USER_AGENT
+        self.session.headers["User-Agent"] = get_user_agent()
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
 

@@ -183,7 +183,11 @@ collection. Each item has `id` (court code) and `label` (full name), not
 
 ## Politeness and retry
 
-- **User-Agent**: `oldp-ingestor/0.1.0 (+https://github.com/openlegaldata)`
+- **User-Agent**: assembled per-deployment as `<name> (<contact>; via oldp-ingestor/<ver>[+<sha>])`.
+  Network subcommands (`info`, `laws`, `cases`, `replay`) require
+  `--user-agent-name` / `--user-agent-contact` (env `OLDP_USER_AGENT_NAME` /
+  `OLDP_USER_AGENT_CONTACT`); contact must be a URL or email. Applied to both
+  provider requests and the OLDP API client. `status`/`analyze-courts` exempt.
 - **Request pacing**: 0.2s between requests (configurable via `--request-delay`)
 - **Retry**: 429 and 503 trigger exponential backoff (1s, 2s, 4s, 8s, 16s)
 - **Retry-After**: header respected when present (minimum 1s)

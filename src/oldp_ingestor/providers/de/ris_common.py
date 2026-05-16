@@ -13,7 +13,6 @@ from oldp_ingestor.providers.http_client import HttpBaseClient
 from oldp_ingestor.providers.http_client import (  # noqa: F401
     INITIAL_BACKOFF,
     MAX_RETRIES,
-    USER_AGENT,
     _RETRYABLE_STATUS_CODES,
     _retry_delay,
 )

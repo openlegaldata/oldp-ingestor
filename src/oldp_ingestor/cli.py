@@ -820,6 +820,22 @@ def main():
         help="Directory for JSON result files (env: OLDP_RESULTS_DIR)",
     )
     parser.add_argument(
+        "--user-agent-name",
+        default=os.environ.get("OLDP_USER_AGENT_NAME", ""),
+        help="Identifier sent in the User-Agent header for every outbound "
+        "request (provider scrapers and the OLDP API). Required for "
+        "subcommands that hit the network. Example: 'acme-research-bot' "
+        "(env: OLDP_USER_AGENT_NAME).",
+    )
+    parser.add_argument(
+        "--user-agent-contact",
+        default=os.environ.get("OLDP_USER_AGENT_CONTACT", ""),
+        help="Reachable contact (URL or email) bundled into the User-Agent "
+        "so providers can reach you about traffic. Example: "
+        "'https://example.org/bot' or 'ops@example.org' "
+        "(env: OLDP_USER_AGENT_CONTACT).",
+    )
+    parser.add_argument(
         "--sink",
         choices=["api", "json-file"],
         default="api",
@@ -1067,6 +1083,17 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    # Subcommands that perform network I/O must identify themselves.
+    # status/analyze-courts read local result files only — UA not needed.
+    _NETWORK_COMMANDS = {"info", "laws", "cases", "replay"}
+    if args.command in _NETWORK_COMMANDS:
+        try:
+            http_client.configure_user_agent(
+                args.user_agent_name, args.user_agent_contact
+            )
+        except http_client.UserAgentError as e:
+            parser.error(str(e))
 
     commands = {
         "info": cmd_info,

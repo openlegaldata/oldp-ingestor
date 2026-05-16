@@ -97,6 +97,78 @@ def test_cli_cases_requires_provider():
     assert "--provider" in result.stderr
 
 
+def _env_without_ua():
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OLDP_USER_AGENT_")}
+    env.setdefault("OLDP_API_URL", "http://localhost:8000")
+    env.setdefault("OLDP_API_TOKEN", "test-token")
+    return env
+
+
+def test_cli_cases_requires_user_agent():
+    """Network subcommand fails fast when name+contact are missing."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "oldp_ingestor.cli",
+            "cases",
+            "--provider",
+            "dummy",
+            "--path",
+            "/tmp/x.json",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env_without_ua(),
+    )
+    assert result.returncode != 0
+    assert "user-agent" in result.stderr.lower()
+
+
+def test_cli_cases_rejects_invalid_contact():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "oldp_ingestor.cli",
+            "--user-agent-name",
+            "acme-bot",
+            "--user-agent-contact",
+            "not-a-url-or-email",
+            "cases",
+            "--provider",
+            "dummy",
+            "--path",
+            "/tmp/x.json",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env_without_ua(),
+    )
+    assert result.returncode != 0
+    assert "contact" in result.stderr.lower()
+
+
+def test_cli_status_does_not_require_user_agent(tmp_path):
+    """status reads local files only and must not require name+contact."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "oldp_ingestor.cli",
+            "--results-dir",
+            str(tmp_path),
+            "status",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env_without_ua(),
+    )
+    # Exit code may be 0 or 1 (stale providers); the point is no UA error.
+    assert "User-Agent is not configured" not in result.stderr
+    assert "user-agent contact" not in result.stderr
+
+
 def test_cli_cases_dummy_requires_path(monkeypatch):
     monkeypatch.setenv("OLDP_API_URL", "http://localhost:8000")
     monkeypatch.setenv("OLDP_API_TOKEN", "test-token")
