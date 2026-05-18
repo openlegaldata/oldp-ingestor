@@ -3,6 +3,21 @@
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _default_user_agent():
+    """Configure a deterministic UA so HttpBaseClient/OLDPClient construction
+    works in tests without each test setting one explicitly. Tests that
+    exercise UA configuration directly are free to overwrite or reset it.
+    """
+    from oldp_ingestor.providers import http_client
+
+    http_client.configure_user_agent(
+        "oldp-ingestor-test", "https://github.com/openlegaldata/oldp-ingestor"
+    )
+    yield
+    http_client._reset_user_agent_for_tests()
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-real",

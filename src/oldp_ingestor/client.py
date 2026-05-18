@@ -36,9 +36,12 @@ class OLDPClient:
         http_auth: str = "",
         write_delay: float = 0.0,
     ):
+        from oldp_ingestor.providers.http_client import get_user_agent
+
         self.api_url = api_url.rstrip("/")
         self.write_delay = write_delay
         self.session = requests.Session()
+        self.session.headers["User-Agent"] = get_user_agent()
 
         if api_token:
             self.session.headers["Authorization"] = f"Token {api_token}"

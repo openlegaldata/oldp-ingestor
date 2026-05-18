@@ -3134,21 +3134,21 @@ def test_by_get_ids_from_page_bad_redirect(monkeypatch):
 # ===================================================================
 
 
-def test_build_user_agent():
-    """_build_user_agent returns version and optional commit hash."""
+def test_build_user_agent_format():
+    """_build_user_agent emits '<name> (<contact>; via oldp-ingestor/<ver>...)'."""
     from oldp_ingestor.providers.http_client import _build_user_agent
 
-    ua = _build_user_agent()
-    assert ua.startswith("oldp-ingestor/")
-    assert "+https://github.com/openlegaldata" in ua
-    # Should have a version number
-    parts = ua.split("/")
-    version_part = parts[1].split("+")[0].split(" ")[0]
+    ua = _build_user_agent("acme-bot", "https://acme.example/bot")
+    assert ua.startswith("acme-bot (https://acme.example/bot; via oldp-ingestor/")
+    assert ua.endswith(")")
+    # version number follows the slash
+    tail = ua.split("via oldp-ingestor/", 1)[1]
+    version_part = tail.split("+")[0].split(")")[0]
     assert version_part[0].isdigit()
 
 
 def test_build_user_agent_no_git(monkeypatch):
-    """_build_user_agent handles missing git gracefully."""
+    """_ingestor_suffix handles missing git gracefully."""
     import subprocess
 
     from oldp_ingestor.providers.http_client import _build_user_agent
@@ -3161,25 +3161,79 @@ def test_build_user_agent_no_git(monkeypatch):
         return original(cmd, **kwargs)
 
     monkeypatch.setattr(subprocess, "check_output", fail_git)
-    ua = _build_user_agent()
-    assert "oldp-ingestor/" in ua
-    assert "+https://github.com/openlegaldata" in ua
+    ua = _build_user_agent("acme-bot", "ops@acme.example")
+    assert "via oldp-ingestor/" in ua
+    # no commit hash appended
+    assert "+" not in ua.split("via oldp-ingestor/", 1)[1].split(")")[0]
 
 
 def test_build_user_agent_no_package(monkeypatch):
-    """_build_user_agent handles missing package metadata gracefully."""
+    """_ingestor_suffix falls back to 0.0.0 when package metadata missing."""
     import oldp_ingestor.providers.http_client as hc
 
     monkeypatch.setattr(hc, "version", lambda _: (_ for _ in ()).throw(Exception()))
-    ua = hc._build_user_agent()
-    assert ua.startswith("oldp-ingestor/0.0.0")
+    ua = hc._build_user_agent("acme-bot", "ops@acme.example")
+    assert "via oldp-ingestor/0.0.0" in ua
 
 
-def test_user_agent_module_level():
-    """USER_AGENT is set at module level."""
-    from oldp_ingestor.providers.http_client import USER_AGENT
+def test_build_user_agent_rejects_blank_name():
+    import pytest as _pytest
 
-    assert "oldp-ingestor/" in USER_AGENT
+    from oldp_ingestor.providers.http_client import (
+        UserAgentError,
+        _build_user_agent,
+    )
+
+    with _pytest.raises(UserAgentError):
+        _build_user_agent("   ", "https://acme.example")
+
+
+def test_validate_contact_accepts_url_and_email():
+    from oldp_ingestor.providers.http_client import validate_contact
+
+    assert validate_contact("https://acme.example/bot") == "https://acme.example/bot"
+    assert validate_contact("http://acme.example") == "http://acme.example"
+    assert validate_contact("ops@acme.example") == "ops@acme.example"
+
+
+def test_validate_contact_rejects_garbage():
+    import pytest as _pytest
+
+    from oldp_ingestor.providers.http_client import UserAgentError, validate_contact
+
+    for bad in ["", "   ", "acme-bot", "ftp://acme.example", "ops@nodot"]:
+        with _pytest.raises(UserAgentError):
+            validate_contact(bad)
+
+
+def test_configure_and_get_user_agent():
+    from oldp_ingestor.providers import http_client
+
+    ua = http_client.configure_user_agent("acme-bot", "ops@acme.example")
+    assert http_client.get_user_agent() == ua
+    assert ua.startswith("acme-bot (ops@acme.example; via oldp-ingestor/")
+
+
+def test_get_user_agent_raises_when_unconfigured():
+    import pytest as _pytest
+
+    from oldp_ingestor.providers import http_client
+
+    http_client._reset_user_agent_for_tests()
+    with _pytest.raises(http_client.UserAgentError):
+        http_client.get_user_agent()
+
+
+def test_http_base_client_sets_user_agent_header():
+    """HttpBaseClient applies the configured UA to its requests session."""
+    from oldp_ingestor.providers import http_client
+    from oldp_ingestor.providers.http_client import HttpBaseClient
+
+    http_client.configure_user_agent("acme-bot", "ops@acme.example")
+    client = HttpBaseClient()
+    assert client.session.headers["User-Agent"].startswith(
+        "acme-bot (ops@acme.example;"
+    )
 
 
 @pytest.mark.playwright
