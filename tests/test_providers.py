@@ -7040,7 +7040,14 @@ def test_juris_search_url_after_submit():
 
 
 def test_juris_submit_search_extended_search_failure(monkeypatch):
-    """_submit_search_with_dates raises on failure (no silent fallback)."""
+    """_submit_search_with_dates swallows transient SPA failures.
+
+    Prod regression 2026-05-18 05:30:34 UTC (juris-hh): a 30s
+    ``wait_for_selector`` timed out and the bare Playwright TimeoutError
+    aborted the whole ``cases juris-hh`` run. Defensive catch now logs a
+    WARNING and yields zero pages — see :func:`_transient_playwright_errors`
+    and the PR #8 pattern in ``eu.py``.
+    """
     from oldp_ingestor.providers.de.juris import BbBeCaseProvider
 
     class FakeLocator:
@@ -7086,5 +7093,228 @@ def test_juris_submit_search_extended_search_failure(monkeypatch):
     monkeypatch.setattr(BbBeCaseProvider, "_ensure_browser", mock_ensure_browser)
 
     provider = BbBeCaseProvider(date_from="2025-01-01", request_delay=0)
-    with pytest.raises(TimeoutError):
-        list(provider._submit_search_with_dates())
+    # Must NOT raise — defensive handling treats SPA failure as end-of-run.
+    pages = list(provider._submit_search_with_dates())
+    assert pages == []
+    # _search_submitted stays False so the caller can retry next run.
+    assert provider._search_submitted is False
+
+
+def test_juris_submit_search_timeout_returns_partial(monkeypatch):
+    """A Playwright TimeoutError on the post-submit selector yields nothing.
+
+    Regression test for prod 2026-05-18 05:30:34 UTC: the post-submit
+    ``page.wait_for_selector(self.WAIT_SELECTOR, timeout=30000)`` raised
+    ``playwright._impl._errors.TimeoutError`` and the unhandled
+    exception killed the whole ``cases juris-hh`` run. We now log and
+    yield zero pages instead.
+    """
+    from playwright._impl._errors import TimeoutError as PWTimeoutError
+
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        def click(self):
+            pass
+
+        def fill(self, val):
+            pass
+
+        def wait_for(self, timeout=None):
+            pass
+
+        def count(self):
+            return 0
+
+    class FakePage:
+        def goto(self, url, timeout=None):
+            pass
+
+        def wait_for_load_state(self, state, timeout=None):
+            pass
+
+        def locator(self, selector):
+            return FakeLocator()
+
+        def wait_for_selector(self, selector, timeout=None):
+            # The first call (date-field selector) succeeds; the second
+            # call (post-submit results selector) reproduces the prod
+            # TimeoutError.
+            if "DatumInputFrom" in selector:
+                return
+            raise PWTimeoutError("Page.wait_for_selector: Timeout 30000ms exceeded.")
+
+        def content(self):
+            return ""
+
+        def close(self):
+            pass
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+    def mock_ensure_browser(self):
+        self._context = FakeContext()
+
+    monkeypatch.setattr(BbBeCaseProvider, "_ensure_browser", mock_ensure_browser)
+
+    provider = BbBeCaseProvider(date_from="2025-05-11", request_delay=0)
+    pages = list(provider._submit_search_with_dates())
+
+    assert pages == []
+    assert provider._search_submitted is False
+
+
+def test_juris_pagination_timeout_returns_collected(monkeypatch):
+    """A Playwright failure during pagination keeps page-1 results.
+
+    Mirrors the prod symptom but on a later page: the run keeps
+    whatever the SPA already returned (page 1) instead of losing it.
+    """
+    from playwright._impl._errors import TimeoutError as PWTimeoutError
+
+    from oldp_ingestor.providers.de.juris import BbBeCaseProvider
+
+    state = {"content_calls": 0, "load_state_calls": 0}
+
+    class FakeNextBtn:
+        @property
+        def first(self):
+            return self
+
+        def click(self):
+            pass
+
+        def count(self):
+            # Page 1: pretend a next button exists once.
+            return 1 if state["content_calls"] == 1 else 0
+
+    class FakeNoopLocator:
+        @property
+        def first(self):
+            return self
+
+        def click(self):
+            pass
+
+        def fill(self, val):
+            pass
+
+        def wait_for(self, timeout=None):
+            pass
+
+        def count(self):
+            return 0
+
+    class FakePage:
+        def goto(self, url, timeout=None):
+            pass
+
+        def wait_for_load_state(self, state_name, timeout=None):
+            state["load_state_calls"] += 1
+            # The second wait_for_load_state call (after clicking "next")
+            # reproduces the prod failure.
+            if state["load_state_calls"] >= 2:
+                raise PWTimeoutError(
+                    "Page.wait_for_load_state: Timeout 30000ms exceeded."
+                )
+
+        def locator(self, selector):
+            if "Next" in selector or "next" in selector:
+                return FakeNextBtn()
+            return FakeNoopLocator()
+
+        def wait_for_selector(self, selector, timeout=None):
+            pass
+
+        def content(self):
+            state["content_calls"] += 1
+            return '<a href="/bsbe/document/PAGE1DOC01/">Hit</a>'
+
+        def close(self):
+            pass
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+    def mock_ensure_browser(self):
+        self._context = FakeContext()
+
+    monkeypatch.setattr(BbBeCaseProvider, "_ensure_browser", mock_ensure_browser)
+
+    provider = BbBeCaseProvider(date_from="2025-01-01", request_delay=0)
+    pages = list(provider._submit_search_with_dates())
+
+    # Page 1 retained; page-2 failure swallowed.
+    assert len(pages) == 1
+    ids, _dates = pages[0]
+    assert "PAGE1DOC01" in ids
+    # Page 1 was successfully submitted before the pagination failure.
+    assert provider._search_submitted is True
+
+
+def test_juris_hh_uses_extended_wait():
+    """HhCaseProvider bumps SPA_TIMEOUT to accommodate Hamburg's slow renders.
+
+    Backwards-compat check: only HH overrides; the other 9 juris-*
+    subclasses inherit the base value.
+    """
+    from oldp_ingestor.providers.de.juris import (
+        BbBeCaseProvider,
+        BwCaseProvider,
+        HeCaseProvider,
+        HhCaseProvider,
+        JurisCaseProvider,
+        MvCaseProvider,
+        RlpCaseProvider,
+        SaCaseProvider,
+        ShCaseProvider,
+        SlCaseProvider,
+        ThCaseProvider,
+    )
+
+    base_timeout = JurisCaseProvider.SPA_TIMEOUT
+    assert HhCaseProvider.SPA_TIMEOUT > base_timeout
+    # All other 9 states keep the base value — backwards compatible.
+    for cls in (
+        BbBeCaseProvider,
+        MvCaseProvider,
+        RlpCaseProvider,
+        SaCaseProvider,
+        ShCaseProvider,
+        BwCaseProvider,
+        SlCaseProvider,
+        HeCaseProvider,
+        ThCaseProvider,
+    ):
+        assert cls.SPA_TIMEOUT == base_timeout, (
+            f"{cls.__name__} unexpectedly overrides SPA_TIMEOUT"
+        )
+
+
+def test_juris_wait_selector_includes_modern_classes():
+    """The shared WAIT_SELECTOR includes the actual SPA class names.
+
+    Investigation of the Hamburg JS bundle (V08_30_00, identical for
+    all 10 states) showed the SPA emits ``.result-list__entry``
+    (double-underscore), ``.result-list-item``, and ``.no-results-body``
+    — none of which were in the original selector list. Keeping the
+    legacy single-hyphen names guarantees backwards compatibility if
+    juris ever switches bundles back.
+    """
+    from oldp_ingestor.providers.de.juris import JurisCaseProvider
+
+    sel = JurisCaseProvider.WAIT_SELECTOR
+    for token in (
+        ".result-list__entry",
+        ".result-list-item",
+        ".no-results-body",
+        ".docLayoutText",  # legacy detail-page anchor preserved
+    ):
+        assert token in sel, f"{token} missing from WAIT_SELECTOR"

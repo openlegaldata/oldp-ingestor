@@ -30,6 +30,29 @@ from oldp_ingestor.providers.playwright_client import PlaywrightBaseClient
 
 logger = logging.getLogger(__name__)
 
+
+def _transient_playwright_errors() -> tuple[type[BaseException], ...]:
+    """Return the tuple of exception classes treated as transient SPA failures.
+
+    Imported lazily so the module still imports when ``playwright`` is not
+    installed (e.g. coverage / lint-only environments). On failure we fall
+    back to a permissive tuple of generic transient exceptions so the
+    defensive ``try/except`` blocks still catch network-class problems.
+
+    Same pattern as ``eu.py`` (PR #8) — transient infrastructure failures
+    must NOT abort the whole ``cases <juris-X>`` command. The caller logs
+    a WARNING with the exception class name and treats the run as
+    end-of-run (returning whatever has been collected so far).
+    """
+    try:
+        from playwright._impl._errors import Error as PWError
+        from playwright._impl._errors import TimeoutError as PWTimeoutError
+
+        return (PWTimeoutError, PWError, ConnectionError, TimeoutError, OSError)
+    except ImportError:  # pragma: no cover
+        return (ConnectionError, TimeoutError, OSError)
+
+
 # Info table selectors
 _INFO_LABELS = {
     "Gericht": "court_name",
@@ -68,11 +91,23 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
 
     BASE_URL: str = ""
     SEARCH_PATH: str = "/search"
-    # The SPA needs time to render — wait for the result list or document content
+    # The SPA needs time to render — wait for the result list or document content.
+    #
+    # Selector list includes both legacy class names (single-hyphen: kept for
+    # safety / older bundles) and the modern BEM-style class names actually
+    # emitted by the current juris bundle (V08_30_00, identical for all 10
+    # states): ``.result-list__entry``, ``.result-list-item``, plus
+    # ``.no-results-body`` so empty-result pages resolve fast instead of
+    # timing out. ``.docLayoutText`` / ``.jportal-content`` are the
+    # detail-page anchors. Extending here keeps the base class working
+    # for every state subclass — backwards compatible by construction.
     WAIT_SELECTOR: str = (
-        ".result-list-entry, .result-list__title, .docLayoutText, .jportal-content"
+        ".result-list-entry, .result-list__entry, .result-list-item, "
+        ".result-list__title, .no-results-body, "
+        ".docLayoutText, .jportal-content"
     )
-    # Timeout for SPA rendering (ms)
+    # Timeout for SPA rendering (ms). Individual subclasses can bump this
+    # for portals known to render slowly (see HhCaseProvider).
     SPA_TIMEOUT: int = 15000
 
     def __init__(
@@ -141,7 +176,16 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
         clicking the SPA's "next" button.  Staying within the same page
         preserves the date filter context (URL-based pagination loses it).
 
-        Raises on failure — no silent fallback to unfiltered search.
+        Transient Playwright failures (TimeoutError, Error subclasses,
+        OS-level network drops) are caught and logged as WARNING; the
+        generator returns gracefully instead of propagating. This mirrors
+        the PR #8 pattern in ``eu.py`` for the SPARQL endpoint — a single
+        flaky SPA load must not abort the whole ``cases juris-X`` run.
+        Regression: prod 2026-05-18 05:30:34 UTC, ``juris-hh``, the
+        post-submit ``wait_for_selector`` timed out after 30s and the
+        bare ``playwright._impl._errors.TimeoutError`` killed the
+        command. Now we yield whatever pages we collected and let the
+        caller continue (cron picks up the rest next run).
         """
         import time
 
@@ -157,37 +201,52 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
         if self.request_delay > 0:
             time.sleep(self.request_delay)
 
+        transient_errors = _transient_playwright_errors()
+
         page = self._context.new_page()
         try:
-            page.goto(search_url, timeout=30000)
-            page.wait_for_load_state("networkidle", timeout=30000)
+            try:
+                page.goto(search_url, timeout=30000)
+                page.wait_for_load_state("networkidle", timeout=30000)
 
-            # Click "Erweiterte Suche" to reveal date fields
-            ext_search = page.locator("span.extended-search__label")
-            ext_search.wait_for(timeout=30000)
-            ext_search.click()
-            page.wait_for_selector(
-                "#DatumInputFrom, .extended-search-datefield__input",
-                timeout=30000,
-            )
-
-            # Fill date fields
-            if self.date_from:
-                page.locator("#DatumInputFrom").fill(
-                    self._iso_to_german_date(self.date_from)
-                )
-            if self.date_to:
-                page.locator("#DatumInputTo").fill(
-                    self._iso_to_german_date(self.date_to)
+                # Click "Erweiterte Suche" to reveal date fields
+                ext_search = page.locator("span.extended-search__label")
+                ext_search.wait_for(timeout=30000)
+                ext_search.click()
+                page.wait_for_selector(
+                    "#DatumInputFrom, .extended-search-datefield__input",
+                    timeout=30000,
                 )
 
-            # Submit the search
-            submit_btn = page.locator(
-                'button[type="submit"], input[type="submit"], '
-                'button:has-text("Suchen"), .search-form__button'
-            ).first
-            submit_btn.click()
-            page.wait_for_selector(self.WAIT_SELECTOR, timeout=30000)
+                # Fill date fields
+                if self.date_from:
+                    page.locator("#DatumInputFrom").fill(
+                        self._iso_to_german_date(self.date_from)
+                    )
+                if self.date_to:
+                    page.locator("#DatumInputTo").fill(
+                        self._iso_to_german_date(self.date_to)
+                    )
+
+                # Submit the search
+                submit_btn = page.locator(
+                    'button[type="submit"], input[type="submit"], '
+                    'button:has-text("Suchen"), .search-form__button'
+                ).first
+                submit_btn.click()
+                page.wait_for_selector(self.WAIT_SELECTOR, timeout=self.SPA_TIMEOUT)
+            except transient_errors as exc:
+                # Transient SPA / network failure before we got any results.
+                # Treat as end-of-run with zero pages; cron will retry.
+                logger.warning(
+                    "Juris extended search failed for %s before any "
+                    "results were rendered: %s: %s — treating as "
+                    "end-of-run, yielding 0 pages",
+                    search_url,
+                    type(exc).__name__,
+                    exc,
+                )
+                return
 
             self._search_submitted = True
 
@@ -207,9 +266,24 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
 
-                next_btns.first.click()
-                time.sleep(2)  # SPA needs time to re-render
-                page.wait_for_load_state("networkidle", timeout=30000)
+                try:
+                    next_btns.first.click()
+                    time.sleep(2)  # SPA needs time to re-render
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                except transient_errors as exc:
+                    # Pagination step failed mid-run. Keep what we already
+                    # yielded and stop cleanly.
+                    logger.warning(
+                        "Juris pagination failed for %s on page %d: "
+                        "%s: %s — treating as end-of-run, returning "
+                        "%d page(s) collected so far",
+                        search_url,
+                        page_num + 1,
+                        type(exc).__name__,
+                        exc,
+                        page_num,
+                    )
+                    return
 
                 page_num += 1
                 html = page.content()
@@ -549,13 +623,28 @@ class BbBeCaseProvider(JurisCaseProvider):
 
 
 class HhCaseProvider(JurisCaseProvider):
-    """Hamburg (landesrecht-hamburg.de)."""
+    """Hamburg (landesrecht-hamburg.de).
+
+    The Hamburg portal renders the post-submit result list noticeably
+    slower than the other 9 juris-* states (observed in prod
+    2026-05-18 05:30:34 UTC: a 30s ``wait_for_selector`` timed out
+    while ``juris-bb`` had completed the same step 30 minutes earlier
+    without issue). Same JS bundle version (``V08_30_00``) as the other
+    states — investigation showed the bundle and selectors are
+    identical, so the difference is portal-side render latency, not a
+    DOM diff. Bump ``SPA_TIMEOUT`` to 60s here only, matching the
+    "SH/BW are slow" pattern noted in CLAUDE.md. The defensive
+    ``try/except`` in :meth:`_submit_search_with_dates` catches the
+    residual case where 60s is still not enough.
+    """
 
     BASE_URL = "https://www.landesrecht-hamburg.de/bsha"
     SOURCE = {
         "name": "Landesrecht Hamburg",
         "homepage": "https://www.landesrecht-hamburg.de",
     }
+    # 4x the base timeout — Hamburg portal renders slowly under load.
+    SPA_TIMEOUT = 60000
 
 
 class MvCaseProvider(JurisCaseProvider):
