@@ -189,9 +189,14 @@ def cmd_laws(args):
                 logger.info("Created book: %s", book_label)
             except requests.HTTPError as e:
                 if e.response is not None and e.response.status_code == 409:
+                    # Book already exists — but a previous run may have
+                    # failed mid-way (book POST succeeded, laws POSTs did
+                    # not). Fall through to the laws-upload loop so any
+                    # missing laws can still be ingested; the per-law 409
+                    # handler below makes a fully-ingested book a no-op.
+                    # Discovered during the EUR-Lex provider e2e run.
                     books_skipped += 1
                     logger.info("Skipped book (already exists): %s", book_label)
-                    continue
                 else:
                     books_errors += 1
                     detail = ""
