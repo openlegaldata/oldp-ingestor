@@ -339,6 +339,23 @@ def _make_law_provider(args) -> LawProvider:
             proxy=args.proxy,
         )
 
+    if args.provider == "eurlex":
+        from oldp_ingestor.providers.de.eurlex_laws import EurLexLawProvider
+
+        celex_arg = getattr(args, "celex", None)
+        celex_numbers = (
+            [c.strip() for c in celex_arg.split(",") if c.strip()]
+            if celex_arg
+            else None
+        )
+        return EurLexLawProvider(
+            celex_numbers=celex_numbers,
+            discover=getattr(args, "discover", False),
+            limit=args.limit,
+            request_delay=args.request_delay,
+            proxy=args.proxy,
+        )
+
     logger.error("Unknown provider '%s'", args.provider)
     sys.exit(1)
 
@@ -894,7 +911,7 @@ def main():
     laws_parser.add_argument(
         "--provider",
         required=True,
-        choices=["dummy", "ris", "gii"],
+        choices=["dummy", "ris", "gii", "eurlex"],
         help="Data source provider",
     )
     laws_parser.add_argument(
@@ -944,6 +961,18 @@ def main():
         action="store_true",
         help="Skip If-Modified-Since and re-download every zip "
         "(gii provider only; forces a full re-sync).",
+    )
+    laws_parser.add_argument(
+        "--celex",
+        help="Comma-separated CELEX numbers to ingest (eurlex provider only). "
+        "Overrides the curated seed list; useful for targeted ingest and "
+        "the e2e test.",
+    )
+    laws_parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="Discover EU instruments via SPARQL (eurlex provider only; "
+        "currently a stub that falls back to the seed list).",
     )
 
     cases_parser = subparsers.add_parser("cases", help="Ingest cases into OLDP")
