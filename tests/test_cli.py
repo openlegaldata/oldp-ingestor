@@ -402,8 +402,18 @@ def test_cmd_laws_dummy_creates_and_skips(monkeypatch):
     assert post_calls[1][0] == "/api/laws/"
 
 
-def test_cmd_laws_book_409_skips_laws(monkeypatch):
-    """When book already exists (409), its laws are skipped entirely."""
+def test_cmd_laws_book_409_still_uploads_laws(monkeypatch):
+    """When book already exists (409), laws are still posted.
+
+    Regression for the partial-ingest recovery case: a previous run may
+    have created the book but failed to POST any laws (e.g. transient
+    OLDP auth issue, network blip). Re-running must still attempt the
+    law POSTs so the empty book can be backfilled — even though both
+    POSTs return 409 here, the important thing is that ``write_law`` is
+    invoked. The per-law 409 handler keeps the run a no-op when the
+    book really is fully ingested. Discovered during the EUR-Lex
+    provider e2e (PR #11).
+    """
     import requests
 
     from oldp_ingestor.cli import cmd_laws
@@ -435,8 +445,106 @@ def test_cmd_laws_book_409_skips_laws(monkeypatch):
         verbose = False
 
     cmd_laws(FakeArgs())
-    # Only the book POST happens; laws are skipped because book was 409
-    assert post_calls == ["/api/law_books/"]
+    # Both the book POST and the law POST happen; the 409 on the book
+    # does not short-circuit the laws-upload loop.
+    assert post_calls == ["/api/law_books/", "/api/laws/"]
+
+
+def test_cmd_laws_book_409_recovers_partial_ingest(monkeypatch, tmp_path):
+    """Book POST 409s but law POSTs succeed — partial-ingest recovery.
+
+    Simulates the empirically-hit scenario from the EUR-Lex e2e: book
+    already exists in the OLDP DB (previous attempt got past the book
+    POST), but its laws were never persisted. The new code must call
+    ``sink.write_law`` for every law the provider yields, and report
+    ``books_skipped=1`` plus a non-zero ``laws_created`` in the result
+    file.
+    """
+    import requests
+
+    from oldp_ingestor.cli import cmd_laws
+
+    # Provider yields multiple laws so we can assert all of them are posted.
+    fixtures = [
+        {
+            "model": "laws.lawbook",
+            "pk": 1,
+            "fields": {
+                "code": "DSGVO",
+                "title": "Datenschutz-Grundverordnung",
+                "revision_date": "2016-04-27",
+                "order": 0,
+                "changelog": "[]",
+                "footnotes": "[]",
+                "sections": "{}",
+            },
+        },
+    ] + [
+        {
+            "model": "laws.law",
+            "pk": i,
+            "fields": {
+                "book": 1,
+                "content": f"<p>Article {i}</p>",
+                "title": f"Art. {i}",
+                "section": f"Art. {i}",
+                "slug": f"art-{i}",
+                "order": i,
+            },
+        }
+        for i in range(1, 4)
+    ]
+    fixture_path = _make_fixture_file(fixtures)
+
+    book_posts = []
+    law_posts = []
+
+    class FakeResponse409:
+        status_code = 409
+
+        def json(self):
+            return {}
+
+    class FakeClient:
+        def post(self, path, data):
+            if path == "/api/law_books/":
+                book_posts.append(data)
+                raise requests.HTTPError(response=FakeResponse409())
+            # Law POSTs succeed (book existed but its laws did not).
+            law_posts.append(data)
+            return {}
+
+    monkeypatch.setattr(
+        "oldp_ingestor.cli.OLDPClient.from_settings", lambda **kw: FakeClient()
+    )
+
+    rdir = str(tmp_path / "results")
+
+    class FakeArgs:
+        provider = "dummy"
+        path = fixture_path
+        limit = None
+        verbose = False
+        results_dir = rdir
+
+    exit_code = cmd_laws(FakeArgs())
+    assert exit_code == 0
+
+    # Book POST was attempted exactly once and returned 409.
+    assert len(book_posts) == 1
+    # All 3 laws were posted despite the book 409 — the bug fix.
+    assert len(law_posts) == 3
+    assert [p["slug"] for p in law_posts] == ["art-1", "art-2", "art-3"]
+
+    # Result file reflects books_skipped=1 and laws_created=3.
+    with open(os.path.join(rdir, "laws_dummy.json")) as f:
+        data = json.load(f)
+    assert data["status"] == "ok"
+    assert data["errors"] == 0
+    # created counter aggregates books_created + laws_created (= 0 + 3).
+    assert data["created"] == 3
+    # skipped counter aggregates books_skipped + laws_skipped (= 1 + 0).
+    assert data["skipped"] == 1
 
 
 def test_cmd_laws_book_other_error(monkeypatch):

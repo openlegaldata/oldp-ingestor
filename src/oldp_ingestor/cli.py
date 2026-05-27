@@ -189,9 +189,14 @@ def cmd_laws(args):
                 logger.info("Created book: %s", book_label)
             except requests.HTTPError as e:
                 if e.response is not None and e.response.status_code == 409:
+                    # Book already exists — but a previous run may have
+                    # failed mid-way (book POST succeeded, laws POSTs did
+                    # not). Fall through to the laws-upload loop so any
+                    # missing laws can still be ingested; the per-law 409
+                    # handler below makes a fully-ingested book a no-op.
+                    # Discovered during the EUR-Lex provider e2e run.
                     books_skipped += 1
                     logger.info("Skipped book (already exists): %s", book_label)
-                    continue
                 else:
                     books_errors += 1
                     detail = ""
@@ -329,6 +334,23 @@ def _make_law_provider(args) -> LawProvider:
             cache_dir=cache_dir,
             toc_url=getattr(args, "toc_url", None) or GII_TOC_URL,
             force_full=getattr(args, "full", False),
+            limit=args.limit,
+            request_delay=args.request_delay,
+            proxy=args.proxy,
+        )
+
+    if args.provider == "eurlex":
+        from oldp_ingestor.providers.de.eurlex_laws import EurLexLawProvider
+
+        celex_arg = getattr(args, "celex", None)
+        celex_numbers = (
+            [c.strip() for c in celex_arg.split(",") if c.strip()]
+            if celex_arg
+            else None
+        )
+        return EurLexLawProvider(
+            celex_numbers=celex_numbers,
+            discover=getattr(args, "discover", False),
             limit=args.limit,
             request_delay=args.request_delay,
             proxy=args.proxy,
@@ -889,7 +911,7 @@ def main():
     laws_parser.add_argument(
         "--provider",
         required=True,
-        choices=["dummy", "ris", "gii"],
+        choices=["dummy", "ris", "gii", "eurlex"],
         help="Data source provider",
     )
     laws_parser.add_argument(
@@ -939,6 +961,18 @@ def main():
         action="store_true",
         help="Skip If-Modified-Since and re-download every zip "
         "(gii provider only; forces a full re-sync).",
+    )
+    laws_parser.add_argument(
+        "--celex",
+        help="Comma-separated CELEX numbers to ingest (eurlex provider only). "
+        "Overrides the curated seed list; useful for targeted ingest and "
+        "the e2e test.",
+    )
+    laws_parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="Discover EU instruments via SPARQL (eurlex provider only; "
+        "currently a stub that falls back to the seed list).",
     )
 
     cases_parser = subparsers.add_parser("cases", help="Ingest cases into OLDP")
