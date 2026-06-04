@@ -22,6 +22,29 @@ from oldp_ingestor.providers.de.ris_common import (
 logger = logging.getLogger(__name__)
 
 
+# Override court labels that the RIS API returns with a redundant
+# seat-city suffix. The API's ``/v1/case-law/courts`` endpoint emits
+# entries like ``id="BGH Karlsruhe" label="Bundesgerichtshof Karlsruhe"``
+# for every German federal court — the trailing city is the court's
+# seat, not part of the institutional name. Posting the label verbatim
+# to the OLDP API yielded 400 ``court_not_found`` (e.g. prod
+# 2026-05-28 02:15:13 for ``Bundesgerichtshof Karlsruhe``: OLDP only
+# knows the canonical name without the seat suffix).
+#
+# Keys are RIS court codes (the ``courtName`` field on each case item
+# and the ``id`` field on the courts endpoint — both carry the same
+# seat suffix). Values are the canonical OLDP court names.
+_RIS_COURT_LABEL_OVERRIDES: dict[str, str] = {
+    "BGH Karlsruhe": "Bundesgerichtshof",
+    "BFH München": "Bundesfinanzhof",
+    "BVerwG Leipzig": "Bundesverwaltungsgericht",
+    "BPatG München": "Bundespatentgericht",
+    "BAG Erfurt": "Bundesarbeitsgericht",
+    "BSG Kassel": "Bundessozialgericht",
+    "BVerfG Karlsruhe": "Bundesverfassungsgericht",
+}
+
+
 class RISCaseProvider(RISBaseClient, CaseProvider):
     """Fetches case law from the RIS API.
 
@@ -82,11 +105,17 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
     def _resolve_court_name(self, court_code: str) -> str:
         """Resolve a court code to its full name, with lazy loading and fallback.
 
+        Overrides in :data:`_RIS_COURT_LABEL_OVERRIDES` take precedence —
+        the RIS API ships federal-court labels with a seat-city suffix
+        that OLDP cannot resolve (see the override table for context).
+
         If the courts endpoint fails, an empty dict is cached for the lifetime
         of this provider instance (one CLI run).  Subsequent calls fall back to
         the raw court code — this is intentional fail-open behaviour that
         preserves data with degraded court names rather than aborting the run.
         """
+        if court_code in _RIS_COURT_LABEL_OVERRIDES:
+            return _RIS_COURT_LABEL_OVERRIDES[court_code]
         if self._court_labels is None:
             try:
                 self._court_labels = self._fetch_court_labels()

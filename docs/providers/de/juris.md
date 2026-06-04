@@ -44,8 +44,10 @@ Navigate to the search portlet with query parameters:
 
 Document IDs are extracted via regex: `/document/([A-Z0-9]+)/`
 
-Wait selectors: `.result-list-entry`, `.docLayoutText`, `.jportal-content`
-(timeout 15s).
+Wait selectors: `.result-list-entry`, `.result-list__entry`,
+`.result-list-item`, `.result-list__title`, `.no-results-body`,
+`.docLayoutText`, `.jportal-content` (timeout 30s; Hamburg overrides to
+60s for its slower portal renders).
 
 ## Case Detail
 
@@ -132,5 +134,6 @@ All 10 state subclasses inherit this behavior from `JurisCaseProvider`.
 - **Content threshold**: Cases with content shorter than 10 characters are skipped.
 - **Request delay**: Default 0.5s between page loads (Playwright default).
 - **Validation**: Cases missing `court_name` are skipped.
-- **15-second timeout**: Page loads time out after 15 seconds if the expected
-  selector is not found.
+- **30-second timeout**: Page loads time out after 30 seconds if the
+  expected selector is not found (60s for Hamburg, whose portal renders
+  noticeably slower under load).

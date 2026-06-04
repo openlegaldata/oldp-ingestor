@@ -671,6 +671,39 @@ def test_resolve_court_name_unknown_falls_back_to_code(monkeypatch):
     assert provider._resolve_court_name("UNKNOWN") == "UNKNOWN"
 
 
+def test_resolve_court_name_strips_seat_city_suffix(monkeypatch):
+    """RIS labels every federal court with its seat city appended
+    (``BGH Karlsruhe`` -> ``Bundesgerichtshof Karlsruhe``).
+
+    Posting that to OLDP fails court resolution (prod 2026-05-28
+    ``cases-ris`` error). The override table must short-circuit the
+    API label and return the institutional name only.
+    """
+    called = {"n": 0}
+
+    def mock_get_json(self, path, **params):
+        called["n"] += 1
+        return [
+            {"id": "BGH Karlsruhe", "label": "Bundesgerichtshof Karlsruhe"},
+        ]
+
+    monkeypatch.setattr(RISBaseClient, "_get_json", mock_get_json)
+
+    provider = RISCaseProvider(request_delay=0)
+    assert provider._resolve_court_name("BGH Karlsruhe") == "Bundesgerichtshof"
+    assert provider._resolve_court_name("BFH München") == "Bundesfinanzhof"
+    assert (
+        provider._resolve_court_name("BVerwG Leipzig")
+        == "Bundesverwaltungsgericht"
+    )
+    assert (
+        provider._resolve_court_name("BVerfG Karlsruhe")
+        == "Bundesverfassungsgericht"
+    )
+    # Overrides hit the in-process table, no fetch needed.
+    assert called["n"] == 0
+
+
 # --- RISCaseProvider.get_cases: full integration with mocked HTTP ---
 
 
@@ -2615,6 +2648,37 @@ def test_nrw_parse_case_missing_content():
     provider = NrwCaseProvider(request_delay=0)
     case = provider._parse_case_from_html(html, "https://test.com")
     assert case is None
+
+
+def test_nrw_parse_case_tenor_only():
+    """OVG NRW publishes some asylum rejections with only the Tenor
+    (no Gründe / body). Treat those as valid cases using the Tenor as
+    content, instead of dropping them with a "Could not find content"
+    warning (observed prod 2026-06-02..06-04 on
+    ``1_A_367_26_A_Beschluss_20260528.html`` — same URL warned every day).
+    """
+    from oldp_ingestor.providers.de.nrw import NrwCaseProvider
+
+    html = """<html><body>
+        <div class="feldbezeichnung">Gericht:</div>
+        <div class="feldinhalt">Oberverwaltungsgericht NRW</div>
+        <div class="feldbezeichnung">Datum:</div>
+        <div class="feldinhalt">28.05.2026</div>
+        <div class="feldbezeichnung">Aktenzeichen:</div>
+        <div class="feldinhalt">1 A 367/26.A</div>
+        <div class="feldbezeichnung">Tenor:</div>
+        <div class="feldinhalt tenor">
+            <p>Der Antrag auf Zulassung der Berufung wird verworfen.</p>
+        </div>
+    </body></html>"""
+
+    provider = NrwCaseProvider(request_delay=0)
+    case = provider._parse_case_from_html(html, "https://test.com")
+    assert case is not None
+    assert case["court_name"] == "Oberverwaltungsgericht NRW"
+    assert case["file_number"] == "1 A 367/26.A"
+    assert "<h2>Tenor</h2>" in case["content"]
+    assert "Berufung wird verworfen" in case["content"]
 
 
 def test_nrw_parse_case_missing_fields():
@@ -5374,16 +5438,53 @@ def test_sn_ovg_parse_document():
     provider._request_with_retry = lambda *a, **kw: FakeResp()
     provider._extract_text_from_pdf = lambda url: "<p>PDF text from OVG</p>"
 
-    case, permanent = provider._fetch_document("7816")
+    case, permanent, out_of_window = provider._fetch_document("7816")
 
     assert case is not None
     assert permanent is False
+    assert out_of_window is False
     assert case["court_name"] == "Sächsisches Oberverwaltungsgericht Bautzen"
     assert case["file_number"] == "3 C 90/21"
     assert case["date"] == "2026-02-02"
     assert case["type"] == "Urteil"
     assert "Normenkontrollantrag" in case["abstract"]
     assert "PDF text" in case["content"]
+
+
+def test_sn_ovg_fetch_document_date_filtered_signals_out_of_window():
+    """Date-filtered docs must be signalled distinctly from parse failures
+    so ``get_cases`` can surface the count at end-of-run (prod 2026-05-28..
+    06-04 saw "Found 0 case(s)" every day with no breakdown — every doc
+    was being filtered out by ``date_from`` and the user couldn't tell
+    that from a parser bug).
+    """
+    import os
+
+    from oldp_ingestor.providers.de.sn_ovg import SnOvgCaseProvider
+
+    fixture_path = os.path.join(
+        os.path.dirname(__file__), "resources", "sn_ovg", "1.html"
+    )
+    with open(fixture_path) as f:
+        html_str = f.read()
+
+    # date_from after the fixture's decision date (2026-02-02)
+    provider = SnOvgCaseProvider(date_from="2026-12-01", request_delay=0)
+
+    class FakeResp:
+        status_code = 200
+        text = html_str
+
+        def raise_for_status(self):
+            pass
+
+    provider._request_with_retry = lambda *a, **kw: FakeResp()
+
+    case, permanent, out_of_window = provider._fetch_document("7816")
+
+    assert case is None
+    assert permanent is False
+    assert out_of_window is True
 
 
 def test_sn_ovg_search(monkeypatch):
@@ -5480,10 +5581,11 @@ def test_sn_ovg_document_no_pdf_skips():
     provider._request_with_retry = lambda *a, **kw: FakeResp()
     provider._extract_text_from_pdf = lambda url: ""  # empty
 
-    case, permanent = provider._fetch_document("1")
+    case, permanent, out_of_window = provider._fetch_document("1")
     assert case is None
     # No PDF / empty content is structural → permanent failure
     assert permanent is True
+    assert out_of_window is False
 
 
 def test_sn_ovg_get_cases_with_mock(monkeypatch):

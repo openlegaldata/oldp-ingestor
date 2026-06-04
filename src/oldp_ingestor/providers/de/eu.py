@@ -279,18 +279,29 @@ OFFSET {offset}"""
             return None, False  # network errors are transient
 
         # 202 = "document still being prepared by EUR-Lex" — comes back
-        # later. Don't burn a retry slot.
+        # later. Don't burn a retry slot. Logged at INFO since this is an
+        # expected transient state, not an error.
         if resp.status_code == 202:
-            logger.warning(
-                "Empty/missing content for CELEX %s (status %d, url %s)",
+            logger.info(
+                "CELEX %s not ready yet on %s (status 202, will retry)",
                 celex,
-                resp.status_code,
                 url,
             )
             return None, False
 
         if resp.status_code != 200:
-            logger.warning(
+            # 404 on EUR-Lex/CELLAR is the dominant fail mode for CELEX
+            # numbers whose HTML rendering hasn't shipped (still indexing,
+            # ``_EXT`` variants, recent judgments). Together with the
+            # mandatory CELLAR fallback this produced ~30 WARNINGs/week
+            # in prod (2026-05-28..06-04) with no actionable signal.
+            # Log expected 404s at INFO; keep WARNING for the rare 5xx /
+            # 403 that may indicate an upstream incident.
+            log_level = (
+                logging.INFO if resp.status_code == 404 else logging.WARNING
+            )
+            logger.log(
+                log_level,
                 "Failed to fetch HTML for CELEX %s from %s: %d Client Error: %s "
                 "for url: %s",
                 celex,
