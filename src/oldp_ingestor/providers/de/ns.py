@@ -164,13 +164,9 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
                 # of an empty result set (confirmed prod 2026-05-31..06-04,
                 # always page=200). Treat 4xx on the search endpoint as
                 # end-of-pagination — not a failure.
-                status = (
-                    exc.response.status_code if exc.response is not None else None
-                )
+                status = exc.response.status_code if exc.response is not None else None
                 if status is not None and 400 <= status < 500:
-                    logger.info(
-                        "End of pagination at page %d (HTTP %d)", page, status
-                    )
+                    logger.info("End of pagination at page %d (HTTP %d)", page, status)
                     break
                 logger.warning("Failed to search page %d: %s", page, exc)
                 break
@@ -205,17 +201,11 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
                     # Feed 4xx into the failure tracker so a stuck UUID is
                     # dropped from the retry budget; leave 5xx transient.
                     status = (
-                        exc.response.status_code
-                        if exc.response is not None
-                        else None
+                        exc.response.status_code if exc.response is not None else None
                     )
                     if status is not None and 400 <= status < 500:
-                        logger.warning(
-                            "Failed to fetch case %s: %s", case_url, exc
-                        )
-                        self.failure_tracker.record_failure(
-                            doc_path, f"HTTP {status}"
-                        )
+                        logger.warning("Failed to fetch case %s: %s", case_url, exc)
+                        self.failure_tracker.record_failure(doc_path, f"HTTP {status}")
                         continue
                     logger.warning("Failed to fetch case %s: %s", case_url, exc)
                     continue  # 5xx / no response → transient

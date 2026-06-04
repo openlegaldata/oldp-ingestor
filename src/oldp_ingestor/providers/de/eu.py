@@ -297,9 +297,7 @@ OFFSET {offset}"""
             # in prod (2026-05-28..06-04) with no actionable signal.
             # Log expected 404s at INFO; keep WARNING for the rare 5xx /
             # 403 that may indicate an upstream incident.
-            log_level = (
-                logging.INFO if resp.status_code == 404 else logging.WARNING
-            )
+            log_level = logging.INFO if resp.status_code == 404 else logging.WARNING
             logger.log(
                 log_level,
                 "Failed to fetch HTML for CELEX %s from %s: %d Client Error: %s "

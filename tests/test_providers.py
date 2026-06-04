@@ -692,13 +692,9 @@ def test_resolve_court_name_strips_seat_city_suffix(monkeypatch):
     provider = RISCaseProvider(request_delay=0)
     assert provider._resolve_court_name("BGH Karlsruhe") == "Bundesgerichtshof"
     assert provider._resolve_court_name("BFH München") == "Bundesfinanzhof"
+    assert provider._resolve_court_name("BVerwG Leipzig") == "Bundesverwaltungsgericht"
     assert (
-        provider._resolve_court_name("BVerwG Leipzig")
-        == "Bundesverwaltungsgericht"
-    )
-    assert (
-        provider._resolve_court_name("BVerfG Karlsruhe")
-        == "Bundesverfassungsgericht"
+        provider._resolve_court_name("BVerfG Karlsruhe") == "Bundesverfassungsgericht"
     )
     # Overrides hit the in-process table, no fetch needed.
     assert called["n"] == 0

@@ -113,9 +113,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
                 ids.append(doc_id)
         return ids
 
-    def _fetch_document(
-        self, doc_id: str
-    ) -> tuple[dict | None, bool, bool]:
+    def _fetch_document(self, doc_id: str) -> tuple[dict | None, bool, bool]:
         """Fetch document detail page and extract case data.
 
         Returns ``(case_or_None, permanent_failure, out_of_window)``:
@@ -246,9 +244,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
                 continue
 
             try:
-                case, permanent_failure, out_of_window = self._fetch_document(
-                    doc_id
-                )
+                case, permanent_failure, out_of_window = self._fetch_document(doc_id)
             except Exception as exc:
                 logger.warning("Failed to process document %s: %s", doc_id, exc)
                 self.failure_tracker.record_failure(doc_id, exc)
@@ -273,8 +269,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         # ``datum`` filtering and day-level pruning happens here.
         if date_filtered:
             logger.info(
-                "Excluded %d/%d document(s) by date range "
-                "(date_from=%s date_to=%s)",
+                "Excluded %d/%d document(s) by date range (date_from=%s date_to=%s)",
                 date_filtered,
                 len(doc_ids),
                 self.date_from or "-",
