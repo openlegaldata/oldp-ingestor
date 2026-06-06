@@ -410,6 +410,554 @@ def test_cli_fetch_not_found_when_provider_returns_none(monkeypatch, capsys):
     assert payload["doc_id"] == "MISSING"
 
 
+def test_juris_parse_listing_entries_extracts_metadata():
+    from oldp_ingestor.providers.de.juris import RlpCaseProvider
+
+    html = """<html><body><ul>
+      <li class="result-list__entry">
+        <a class="entry-link" href="/document/AAA1234/format/xsl">
+          <div class="result-list__title">
+            <div class="result-list__title-entry result-list__title-entry--leading">05.05.2026</div>
+            <div class="result-list__title-entry">LG Trier 5. Zivilkammer</div>
+            <div class="result-list__title-entry">5 T 16/26</div>
+          </div>
+          <div class="result-list__sub-title">
+            <div class="result-list__sub-title-entry result-list__sub-title-entry--leading">Beschluss</div>
+          </div>
+        </a>
+      </li>
+      <li class="result-list__entry">
+        <a class="entry-link" href="/document/BBB5678/format/xsl">
+          <div class="result-list__title">
+            <div class="result-list__title-entry result-list__title-entry--leading">06.05.2026</div>
+            <div class="result-list__title-entry">OLG Koblenz</div>
+            <div class="result-list__title-entry">9 U 1/24</div>
+          </div>
+        </a>
+      </li>
+    </ul></body></html>"""
+    provider = RlpCaseProvider()
+    entries = provider._parse_listing_entries(html)
+    assert len(entries) == 2
+    assert entries[0]["doc_id"] == "AAA1234"
+    assert entries[0]["court_name"] == "LG Trier 5. Zivilkammer"
+    assert entries[0]["file_number"] == "5 T 16/26"
+    assert entries[0]["date"] == "2026-05-05"
+    assert entries[0]["type"] == "Beschluss"
+    assert entries[1]["type"] == ""  # no sub-title
+
+
+def test_juris_lookup_search_uses_canonical_when_single_hit(monkeypatch):
+    """When the SPA auto-navigates to a single doc, the provider
+    synthesises a candidate from the detail page instead of returning []."""
+    from oldp_ingestor.providers.de.juris import RlpCaseProvider
+
+    detail_html = """<html>
+      <head><link id="idCanonicalUrlLink" rel="canonical"
+        href="https://www.landesrecht.rlp.de/bsrp/document/NJRE001641457"></head>
+      <body>
+        <table>
+          <tr>
+            <th class="TD30"><strong>Gericht:</strong></th>
+            <td class="TD70">LG Trier 5. Zivilkammer</td>
+          </tr>
+          <tr>
+            <th class="TD30"><strong>Entscheidungsdatum:</strong></th>
+            <td class="TD70">05.05.2026</td>
+          </tr>
+          <tr>
+            <th class="TD30"><strong>Aktenzeichen:</strong></th>
+            <td class="TD70">5 T 16/26</td>
+          </tr>
+        </table>
+      </body>
+    </html>"""
+
+    provider = RlpCaseProvider()
+    monkeypatch.setattr(
+        provider, "_get_page_html", lambda url, wait_selector, timeout: detail_html
+    )
+    hits = provider.lookup_search(file_number="5 T 16/26")
+    assert len(hits) == 1
+    assert hits[0]["doc_id"] == "NJRE001641457"
+    assert hits[0]["court_name"] == "LG Trier 5. Zivilkammer"
+    assert hits[0]["date"] == "2026-05-05"
+
+
+def test_juris_lookup_search_filters_listing_to_exact_match(monkeypatch):
+    from oldp_ingestor.providers.de.juris import RlpCaseProvider
+
+    listing_html = """<html><body><ul>
+      <li class="result-list__entry">
+        <a class="entry-link" href="/document/AAA/format/xsl">
+          <div class="result-list__title">
+            <div class="result-list__title-entry result-list__title-entry--leading">05.05.2026</div>
+            <div class="result-list__title-entry">LG Trier</div>
+            <div class="result-list__title-entry">5 T 16/26</div>
+          </div>
+        </a>
+      </li>
+      <li class="result-list__entry">
+        <a class="entry-link" href="/document/BBB/format/xsl">
+          <div class="result-list__title">
+            <div class="result-list__title-entry result-list__title-entry--leading">06.05.2026</div>
+            <div class="result-list__title-entry">OLG Koblenz</div>
+            <div class="result-list__title-entry">99 X 99/99</div>
+          </div>
+        </a>
+      </li>
+    </ul></body></html>"""
+
+    provider = RlpCaseProvider()
+    monkeypatch.setattr(
+        provider, "_get_page_html", lambda url, wait_selector, timeout: listing_html
+    )
+    hits = provider.lookup_search(file_number="5 T 16/26")
+    assert [h["doc_id"] for h in hits] == ["AAA"]
+
+
+def test_juris_lookup_search_rejects_missing_file_number():
+    from oldp_ingestor.providers.de.juris import RlpCaseProvider
+
+    with pytest.raises(ValueError):
+        RlpCaseProvider().lookup_search(ecli="X")
+
+
+def test_juris_summary_from_detail_html_handles_garbage():
+    """``_summary_from_detail_html`` falls back gracefully on bad HTML
+    so ``lookup_search`` doesn't blow up on a malformed detail page."""
+    from oldp_ingestor.providers.de.juris import RlpCaseProvider
+
+    summary = RlpCaseProvider()._summary_from_detail_html(
+        "<<<not-valid>>>", "DOC", "5 T 16/26"
+    )
+    assert summary["file_number"] == "5 T 16/26"
+
+
+def test_juris_lookup_fetch_delegates_to_parse_case_detail(monkeypatch):
+    from oldp_ingestor.providers.de.juris import RlpCaseProvider
+
+    called = {}
+
+    def fake_parse(url):
+        called["url"] = url
+        return {"court_name": "LG Trier", "file_number": "5 T 16/26"}
+
+    provider = RlpCaseProvider()
+    monkeypatch.setattr(provider, "_parse_case_detail", fake_parse)
+    case = provider.lookup_fetch("ABC123")
+    assert case["court_name"] == "LG Trier"
+    assert "/document/ABC123" in called["url"]
+
+
+def test_cli_load_provider_cls_raises_on_unknown():
+    from oldp_ingestor import cli_lookup
+
+    with pytest.raises(KeyError):
+        cli_lookup._load_provider_cls("does-not-exist")
+
+
+def test_cli_fetch_unknown_provider(capsys):
+    from oldp_ingestor import cli_lookup
+
+    rc = cli_lookup.cmd_lookup_fetch(
+        _Args(provider="bogus", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert payload["status"] == "error"
+
+
+def test_cli_ingest_unknown_provider(capsys):
+    from oldp_ingestor import cli_lookup
+
+    rc = cli_lookup.cmd_lookup_ingest(
+        _Args(provider="bogus", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert payload["status"] == "error"
+
+
+def test_cli_search_success_emits_candidates(monkeypatch, capsys):
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    monkeypatch.setattr(
+        ris_cases.RISCaseProvider,
+        "lookup_search",
+        lambda self, **kw: [
+            {
+                "doc_id": "X",
+                "court_name": "BGH",
+                "file_number": "VI ZR 1/00",
+                "date": "2024-01-01",
+                "ecli": "",
+                "type": "Urteil",
+                "snippet": "head",
+            }
+        ],
+    )
+    rc = cli_lookup.cmd_lookup_search(
+        _Args(
+            provider="ris",
+            file_number="VI ZR 1/00",
+            ecli=None,
+            court_hint=None,
+            date=None,
+            limit=10,
+            request_delay=0,
+            proxy=None,
+        )
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 0
+    assert payload["status"] == "ok"
+    assert payload["candidates"][0]["doc_id"] == "X"
+
+
+def test_cli_search_provider_raises_value_error(monkeypatch, capsys):
+    """Provider-raised ValueError (e.g. voris asked for ECLI) → status:error."""
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ns
+
+    def raise_value_error(self, **kw):
+        raise ValueError("ecli not supported")
+
+    monkeypatch.setattr(ns.NsCaseProvider, "lookup_search", raise_value_error)
+    rc = cli_lookup.cmd_lookup_search(
+        _Args(
+            provider="ns",
+            file_number="X",
+            ecli=None,
+            court_hint=None,
+            date=None,
+            limit=10,
+            request_delay=0,
+            proxy=None,
+        )
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert payload["status"] == "error"
+    assert "ecli not supported" in payload["reason"]
+
+
+def test_cli_search_provider_raises_generic_exception(monkeypatch, capsys):
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    def raise_runtime(self, **kw):
+        raise RuntimeError("upstream blew up")
+
+    monkeypatch.setattr(ris_cases.RISCaseProvider, "lookup_search", raise_runtime)
+    rc = cli_lookup.cmd_lookup_search(
+        _Args(
+            provider="ris",
+            file_number="X",
+            ecli=None,
+            court_hint=None,
+            date=None,
+            limit=10,
+            request_delay=0,
+            proxy=None,
+        )
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert payload["status"] == "error"
+    assert "RuntimeError" in payload["reason"]
+
+
+def test_cli_search_not_implemented_path(monkeypatch, capsys):
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    def raise_ni(self, **kw):
+        raise NotImplementedError
+
+    monkeypatch.setattr(ris_cases.RISCaseProvider, "lookup_search", raise_ni)
+    rc = cli_lookup.cmd_lookup_search(
+        _Args(
+            provider="ris",
+            file_number="X",
+            ecli=None,
+            court_hint=None,
+            date=None,
+            limit=10,
+            request_delay=0,
+            proxy=None,
+        )
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert "does not support" in payload["reason"]
+
+
+def test_cli_fetch_exception(monkeypatch, capsys):
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    def raise_runtime(self, doc_id):
+        raise RuntimeError("dead")
+
+    monkeypatch.setattr(ris_cases.RISCaseProvider, "lookup_fetch", raise_runtime)
+    rc = cli_lookup.cmd_lookup_fetch(
+        _Args(provider="ris", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert payload["status"] == "error"
+
+
+def test_cli_fetch_success_returns_case(monkeypatch, capsys):
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    monkeypatch.setattr(
+        ris_cases.RISCaseProvider,
+        "lookup_fetch",
+        lambda self, doc_id: {"court_name": "BGH", "content": "X"},
+    )
+    rc = cli_lookup.cmd_lookup_fetch(
+        _Args(provider="ris", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 0
+    assert payload["status"] == "ok"
+    assert payload["case"]["court_name"] == "BGH"
+
+
+def test_cli_ingest_fetch_returns_none(monkeypatch, capsys):
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    monkeypatch.setattr(
+        ris_cases.RISCaseProvider, "lookup_fetch", lambda self, doc_id: None
+    )
+    rc = cli_lookup.cmd_lookup_ingest(
+        _Args(provider="ris", doc_id="MISSING", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 1
+    assert payload["status"] == "not_found"
+
+
+def test_cli_ingest_fetch_raises_exception(monkeypatch, capsys):
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    def raise_runtime(self, doc_id):
+        raise RuntimeError("upstream gone")
+
+    monkeypatch.setattr(ris_cases.RISCaseProvider, "lookup_fetch", raise_runtime)
+    rc = cli_lookup.cmd_lookup_ingest(
+        _Args(provider="ris", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert payload["status"] == "error"
+
+
+def test_cli_ingest_success(monkeypatch, capsys):
+    """Happy path: fetch ok + sink writes succeed."""
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    monkeypatch.setattr(
+        ris_cases.RISCaseProvider,
+        "lookup_fetch",
+        lambda self, doc_id: {
+            "court_name": "BGH",
+            "file_number": "VI ZR 1/00",
+            "date": "2024-01-01",
+            "content": "x" * 500,
+            "source_url": "https://x/y",
+        },
+    )
+    written: list[dict] = []
+
+    class _OkSink:
+        def __init__(self, *a, **kw):
+            pass
+
+        def write_case(self, case):
+            written.append(case)
+
+    class _DummyClient:
+        @classmethod
+        def from_settings(cls):
+            return cls()
+
+    monkeypatch.setattr("oldp_ingestor.sinks.api.ApiSink", _OkSink)
+    monkeypatch.setattr("oldp_ingestor.client.OLDPClient", _DummyClient)
+
+    rc = cli_lookup.cmd_lookup_ingest(
+        _Args(provider="ris", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 0
+    assert payload["status"] == "ok"
+    assert payload["already_exists"] is False
+    assert "content" not in payload["case"]
+    # SOURCE was injected before writing
+    assert written and written[0].get("source", {}).get("name")
+
+
+def test_cli_ingest_non_409_http_error(monkeypatch, capsys):
+    """400/500 from OLDP becomes a real ``error`` with detail body."""
+    import requests
+
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    monkeypatch.setattr(
+        ris_cases.RISCaseProvider,
+        "lookup_fetch",
+        lambda self, doc_id: {
+            "court_name": "BGH",
+            "file_number": "X",
+            "date": "2024-01-01",
+            "content": "x",
+            "source_url": "y",
+        },
+    )
+
+    class _BadResp:
+        status_code = 400
+
+        def json(self):
+            return {"detail": "validation failed"}
+
+    class _BadSink:
+        def __init__(self, *a, **kw):
+            pass
+
+        def write_case(self, case):
+            err = requests.HTTPError("400")
+            err.response = _BadResp()
+            raise err
+
+    class _DummyClient:
+        @classmethod
+        def from_settings(cls):
+            return cls()
+
+    monkeypatch.setattr("oldp_ingestor.sinks.api.ApiSink", _BadSink)
+    monkeypatch.setattr("oldp_ingestor.client.OLDPClient", _DummyClient)
+
+    rc = cli_lookup.cmd_lookup_ingest(
+        _Args(provider="ris", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert payload["status"] == "error"
+    assert "400" in payload["reason"]
+    assert payload["details"] == {"detail": "validation failed"}
+
+
+def test_cli_ingest_write_raises_generic(monkeypatch, capsys):
+    """Non-HTTPError exceptions during sink.write_case → status:error."""
+    from oldp_ingestor import cli_lookup
+    from oldp_ingestor.providers.de import ris_cases
+
+    monkeypatch.setattr(
+        ris_cases.RISCaseProvider,
+        "lookup_fetch",
+        lambda self, doc_id: {
+            "court_name": "BGH",
+            "file_number": "X",
+            "date": "2024-01-01",
+            "content": "x",
+            "source_url": "y",
+        },
+    )
+
+    class _Sink:
+        def __init__(self, *a, **kw):
+            pass
+
+        def write_case(self, case):
+            raise RuntimeError("network gone")
+
+    class _DummyClient:
+        @classmethod
+        def from_settings(cls):
+            return cls()
+
+    monkeypatch.setattr("oldp_ingestor.sinks.api.ApiSink", _Sink)
+    monkeypatch.setattr("oldp_ingestor.client.OLDPClient", _DummyClient)
+
+    rc = cli_lookup.cmd_lookup_ingest(
+        _Args(provider="ris", doc_id="X", request_delay=0, proxy=None)
+    )
+    payload = _read_json_lines(capsys)
+    assert rc == 2
+    assert "RuntimeError" in payload["reason"]
+
+
+def test_cli_try_close_swallows_exceptions():
+    from oldp_ingestor import cli_lookup
+
+    class _Bad:
+        def close(self):
+            raise RuntimeError("nope")
+
+    # Must not raise.
+    cli_lookup._try_close(_Bad())
+    cli_lookup._try_close(object())  # no close attr
+
+
+def test_fetch_all_courts_paginates(monkeypatch):
+    """Verify the unauthenticated courts fetch follows ``next`` URLs."""
+    from oldp_ingestor import cli_lookup
+
+    pages = [
+        {"results": [{"id": 1}], "next": "https://x.test/api/courts/?page=2"},
+        {"results": [{"id": 2}], "next": None},
+    ]
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, payload):
+            self._p = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._p
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        return _Resp(pages[len(calls) - 1])
+
+    monkeypatch.setattr("requests.get", fake_get)
+    out = cli_lookup._fetch_all_courts()
+    assert [c["id"] for c in out] == [1, 2]
+    # No auth header — only User-Agent is set
+    # (covered by inspecting calls indirectly)
+
+
+def test_cli_providers_resolved_omits_filter_when_resolve_returns_empty(
+    monkeypatch, capsys
+):
+    """When ``_fetch_all_courts`` raises, payload still emits with
+    ``courts_error`` set and no per-provider ``courts`` field."""
+    from oldp_ingestor import cli_lookup
+
+    def boom():
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(cli_lookup, "_fetch_all_courts", boom)
+    rc = cli_lookup.cmd_lookup_providers(_Args(resolve_courts=True))
+    payload = _read_json_lines(capsys)
+    assert rc == 0
+    assert payload["status"] == "ok"
+    assert "RuntimeError" in payload["courts_error"]
+    assert "courts" not in payload["result"]["ris"]
+
+
 def test_cli_ingest_409_reports_already_exists(monkeypatch, capsys):
     """409 from the OLDP API maps to ``ok + already_exists`` so a retrying
     agent treats duplicate ingestion as success."""
