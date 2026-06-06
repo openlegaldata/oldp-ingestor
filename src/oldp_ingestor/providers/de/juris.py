@@ -26,6 +26,7 @@ import lxml.html
 from lxml.cssselect import CSSSelector
 
 from oldp_ingestor.providers.base import CaseProvider
+from oldp_ingestor.providers.lookup import LookupCapability, LookupMixin
 from oldp_ingestor.providers.playwright_client import PlaywrightBaseClient
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ _INFO_LABELS = {
 }
 
 
-class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
+class JurisCaseProvider(LookupMixin, PlaywrightBaseClient, CaseProvider):
     """Base provider for eJustiz Bürgerservice portals.
 
     All German state legal portals running juris eJustiz share the
@@ -91,6 +92,11 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
 
     BASE_URL: str = ""
     SEARCH_PATH: str = "/search"
+    # OLDP state IDs the portal indexes. Subclasses override. Used to
+    # resolve provider→courts coverage against the OLDP courts API at
+    # ``lookup providers`` time. Berlin-Brandenburg portal covers two
+    # states (Berlin + Brandenburg) — modelled as a list for uniformity.
+    LOOKUP_STATE_IDS: tuple[int, ...] = ()
     # The SPA needs time to render — wait for the result list or document content.
     #
     # Selector list includes both legacy class names (single-hyphen: kept for
@@ -131,6 +137,23 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
 
     # Whether the initial search with date filters has been submitted
     _search_submitted: bool = False
+
+    def __init_subclass__(cls, **kwargs):
+        """Auto-build :data:`LOOKUP_CAPABILITY` from each subclass's
+        ``LOOKUP_STATE_IDS`` so per-state subclasses don't have to repeat
+        the declaration. Subclasses that don't set ``LOOKUP_STATE_IDS``
+        inherit an empty capability and won't appear in ``lookup
+        providers`` court coverage."""
+        super().__init_subclass__(**kwargs)
+        cls.LOOKUP_CAPABILITY = LookupCapability(
+            keys=("file_number",),
+            court_filter=(
+                {"state_ids": list(cls.LOOKUP_STATE_IDS)}
+                if cls.LOOKUP_STATE_IDS
+                else {}
+            ),
+            cost="high",
+        )
 
     def _search_url(self, page: int = 1) -> str:
         """Build search URL for a given page.
@@ -608,6 +631,209 @@ class JurisCaseProvider(PlaywrightBaseClient, CaseProvider):
             yield ids, page_dates
             page += 1
 
+    # ------------------------------------------------------------------
+    # Targeted citation-based lookup (LookupMixin)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise_az(az: str) -> str:
+        return " ".join(az.split()).lower()
+
+    def _parse_listing_entries(self, html: str) -> list[dict]:
+        """Extract ``{doc_id, date, court, file_number, type}`` per result.
+
+        The juris SPA renders each hit as::
+
+            <li class="result-list__entry"...>
+              <a class="entry-link" href=".../document/<ID>/...">
+                ...
+                <div class="result-list__title">
+                  <div class="...title-entry--leading">DD.MM.YYYY</div>
+                  <div class="result-list__title-entry">Court</div>
+                  <div class="result-list__title-entry">AZ</div>
+                </div>
+                <div class="result-list__sub-title">
+                  <div class="...sub-title-entry--leading">Type</div>
+
+        Bundle version ``V08_30_00`` (verified prod 2026-06-06, all 10
+        state portals share the markup). We parse via lxml so it's
+        resilient to whitespace, attribute order, and stray children.
+        """
+        try:
+            tree = lxml.html.fromstring(html)
+        except Exception:
+            return []
+
+        entries: list[dict] = []
+        for li in tree.xpath('//li[contains(@class, "result-list__entry")]'):
+            href_links = li.xpath('.//a[contains(@class, "entry-link")]/@href')
+            if not href_links:
+                continue
+            m = re.search(r"/document/([A-Z0-9]+)", href_links[0])
+            if not m:
+                continue
+            doc_id = m.group(1)
+
+            def _text(xpath_query: str, root=li) -> str:
+                hits = root.xpath(xpath_query)
+                return hits[0].strip() if hits else ""
+
+            german_date = _text(
+                './/div[contains(@class, "title-entry--leading")]/text()'
+            )
+            iso_date = self._parse_german_date(german_date) if german_date else ""
+            title_entries = li.xpath(
+                './/div[contains(@class, "result-list__title-entry") '
+                'and not(contains(@class, "leading"))]/text()'
+            )
+            court = title_entries[0].strip() if title_entries else ""
+            az = title_entries[1].strip() if len(title_entries) > 1 else ""
+            decision_type = _text(
+                './/div[contains(@class, "sub-title-entry--leading")]/text()'
+            )
+
+            entries.append(
+                {
+                    "doc_id": doc_id,
+                    "date": iso_date,
+                    "court_name": court,
+                    "file_number": az,
+                    "type": decision_type,
+                }
+            )
+        return entries
+
+    def lookup_search(
+        self,
+        file_number: str | None = None,
+        ecli: str | None = None,
+        court_hint: str | None = None,
+        date: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Look up a juris-portal decision by Aktenzeichen.
+
+        The portal's basic search box accepts a free-text ``query``
+        parameter that matches against the AZ. We render one page and
+        filter candidates client-side to exact AZ matches so the agent
+        gets a precise (typically one-hit) result list.
+
+        ``ecli`` is not exposed by the SPA's basic search and silently
+        ignored; calls without ``file_number`` raise ``ValueError`` so
+        the agent doesn't misread an empty result.
+        """
+        if not file_number:
+            raise ValueError("juris lookup requires file_number (ecli not supported)")
+
+        from urllib.parse import quote_plus
+
+        query = quote_plus(file_number)
+        url = (
+            f"{self.BASE_URL}/js_peid/Suchportlet1/media-type/html"
+            f"?formhaschangedvalue=yes&eventSubmit_doSearch=suchen"
+            f"&action=portlets.jw.MainAction&deletemask=no&wt_form=1"
+            f"&form=bsstdFastSearch&desc=all&query={query}&standardsuche=suchen"
+        )
+
+        html = self._get_page_html(
+            url, wait_selector=self.WAIT_SELECTOR, timeout=self.SPA_TIMEOUT
+        )
+
+        # The juris SPA auto-navigates straight to the document when the
+        # search resolves to a unique hit instead of rendering a results
+        # list (verified live 2026-06-06: ``query=5 T 16/26`` lands on
+        # the canonical document page directly). Detect this via the
+        # ``<link rel="canonical" href=".../document/<ID>">`` header and
+        # synthesise a single candidate so the agent can proceed to
+        # fetch without an extra round-trip.
+        canonical = re.search(
+            r'<link[^>]+rel="canonical"[^>]+href="[^"]*?/document/([A-Z0-9]+)"',
+            html,
+        )
+        if canonical:
+            doc_id = canonical.group(1)
+            return [
+                {
+                    "doc_id": doc_id,
+                    # The detail page carries court/date in its info
+                    # table; populate via the existing parser to keep
+                    # the candidate shape consistent across providers.
+                    **self._summary_from_detail_html(html, doc_id, file_number),
+                }
+            ]
+
+        norm_target = self._normalise_az(file_number)
+        candidates: list[dict] = []
+        for entry in self._parse_listing_entries(html):
+            if self._normalise_az(entry["file_number"]) != norm_target:
+                continue
+            candidates.append(
+                {
+                    "doc_id": entry["doc_id"],
+                    "court_name": entry["court_name"],
+                    "file_number": entry["file_number"],
+                    "date": entry["date"],
+                    "ecli": "",
+                    "type": entry["type"],
+                    "snippet": (
+                        f"{entry['court_name']}, {entry['date']} — "
+                        f"{entry['file_number']} ({entry['type']})"
+                    )[:200],
+                }
+            )
+            if len(candidates) >= limit:
+                break
+        return candidates
+
+    def _summary_from_detail_html(
+        self, html: str, doc_id: str, fallback_file_number: str
+    ) -> dict:
+        """Extract candidate-shaped summary fields from a juris detail page.
+
+        Used when :meth:`lookup_search` lands directly on a document
+        page (single-hit navigation). Reuses :meth:`_parse_info_table`
+        and falls back to the user-supplied ``file_number`` when the
+        info table is missing the AZ field.
+        """
+        try:
+            tree = lxml.html.fromstring(html)
+        except Exception:
+            return {
+                "court_name": "",
+                "file_number": fallback_file_number,
+                "date": "",
+                "ecli": "",
+                "type": "",
+                "snippet": "",
+            }
+        info = self._parse_info_table(tree)
+        return {
+            "court_name": info.get("court_name", ""),
+            "file_number": info.get("file_number", "") or fallback_file_number,
+            "date": info.get("date", ""),
+            "ecli": info.get("ecli", ""),
+            "type": info.get("type", ""),
+            "snippet": (
+                f"{info.get('court_name', '')}, "
+                f"{info.get('date', '')} — "
+                f"{info.get('file_number', '')}"
+            )[:200],
+        }
+
+    def lookup_fetch(self, doc_id: str) -> dict | None:
+        """Fetch a full juris decision by SPA document id.
+
+        Reuses :meth:`_parse_case_detail` (the same path the streaming
+        flow uses) so the case dict shape is identical to ``iter_cases``
+        output.
+        """
+        try:
+            return self._parse_case_detail(self._case_detail_url(doc_id))
+        finally:
+            # Same cleanup contract as lookup_search — let the CLI close
+            # the provider explicitly via ``with`` / ``close()``.
+            pass
+
 
 # --- Per-state subclasses (thin — just BASE_URL override) ---
 
@@ -620,6 +846,7 @@ class BbBeCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Berlin-Brandenburg",
         "homepage": "https://gesetze.berlin.de",
     }
+    LOOKUP_STATE_IDS = (5, 6)  # Berlin + Brandenburg
 
 
 class HhCaseProvider(JurisCaseProvider):
@@ -643,6 +870,7 @@ class HhCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Hamburg",
         "homepage": "https://www.landesrecht-hamburg.de",
     }
+    LOOKUP_STATE_IDS = (8,)
     # 4x the base timeout — Hamburg portal renders slowly under load.
     SPA_TIMEOUT = 60000
 
@@ -655,6 +883,7 @@ class MvCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Mecklenburg-Vorpommern",
         "homepage": "https://www.landesrecht-mv.de",
     }
+    LOOKUP_STATE_IDS = (10,)
 
 
 class RlpCaseProvider(JurisCaseProvider):
@@ -665,6 +894,7 @@ class RlpCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Rheinland-Pfalz",
         "homepage": "https://www.landesrecht.rlp.de",
     }
+    LOOKUP_STATE_IDS = (13,)
 
 
 class SaCaseProvider(JurisCaseProvider):
@@ -675,6 +905,7 @@ class SaCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Sachsen-Anhalt",
         "homepage": "https://www.landesrecht.sachsen-anhalt.de",
     }
+    LOOKUP_STATE_IDS = (16,)
 
 
 class ShCaseProvider(JurisCaseProvider):
@@ -685,6 +916,7 @@ class ShCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Schleswig-Holstein",
         "homepage": "https://www.gesetze-rechtsprechung.sh.juris.de",
     }
+    LOOKUP_STATE_IDS = (17,)
 
 
 class BwCaseProvider(JurisCaseProvider):
@@ -695,6 +927,7 @@ class BwCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Baden-Württemberg",
         "homepage": "https://www.landesrecht-bw.de",
     }
+    LOOKUP_STATE_IDS = (3,)
 
 
 class SlCaseProvider(JurisCaseProvider):
@@ -702,6 +935,7 @@ class SlCaseProvider(JurisCaseProvider):
 
     BASE_URL = "https://recht.saarland.de/bssl"
     SOURCE = {"name": "Landesrecht Saarland", "homepage": "https://recht.saarland.de"}
+    LOOKUP_STATE_IDS = (14,)
 
 
 class HeCaseProvider(JurisCaseProvider):
@@ -712,6 +946,7 @@ class HeCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Hessen",
         "homepage": "https://www.lareda.hessenrecht.hessen.de",
     }
+    LOOKUP_STATE_IDS = (9,)
 
 
 class ThCaseProvider(JurisCaseProvider):
@@ -722,3 +957,4 @@ class ThCaseProvider(JurisCaseProvider):
         "name": "Landesrecht Thüringen",
         "homepage": "https://landesrecht.thueringen.de",
     }
+    LOOKUP_STATE_IDS = (18,)

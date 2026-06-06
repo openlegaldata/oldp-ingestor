@@ -12,6 +12,7 @@ import requests
 from lxml.cssselect import CSSSelector
 
 from oldp_ingestor.providers.base import CaseProvider
+from oldp_ingestor.providers.lookup import LookupCapability, LookupMixin
 from oldp_ingestor.providers.scraper_common import ScraperBaseClient
 
 logger = logging.getLogger(__name__)
@@ -21,8 +22,14 @@ NRW_SEARCH_URL = f"{NRW_BASE_URL}/index.php"
 NRW_PER_PAGE = 100
 NRW_MAX_PAGE = 1600
 
+# OLDP state id for Nordrhein-Westfalen. Used by the lookup capability
+# to resolve the provider's court coverage at runtime against the OLDP
+# courts API; the portal indexes every NRW court (AG/LG/OLG/VG/OVG/...)
+# so a state-level selector matches what's actually queryable.
+_NRW_STATE_ID = 12
 
-class NrwCaseProvider(ScraperBaseClient, CaseProvider):
+
+class NrwCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
     """Fetches case law from nrwesuche.justiz.nrw.de.
 
     Uses POST-based search with form data. Session-based with cookies.
@@ -49,6 +56,12 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
         "name": "NRWE Rechtsprechungsdatenbank",
         "homepage": "https://nrwesuche.justiz.nrw.de",
     }
+
+    LOOKUP_CAPABILITY = LookupCapability(
+        keys=("file_number",),
+        court_filter={"state_ids": [_NRW_STATE_ID]},
+        cost="medium",
+    )
 
     def __init__(
         self,
@@ -255,3 +268,101 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
             page += 1
 
         return cases
+
+    # ------------------------------------------------------------------
+    # Targeted citation-based lookup (LookupMixin)
+    # ------------------------------------------------------------------
+
+    def lookup_search(
+        self,
+        file_number: str | None = None,
+        ecli: str | None = None,
+        court_hint: str | None = None,
+        date: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Look up a specific NRW decision by Aktenzeichen.
+
+        The NRWE search form has a dedicated ``aktenzeichen`` field which
+        performs a server-side match — one POST returns the (typically
+        small) candidate set with no further pagination required.
+
+        ``ecli`` is not supported by the upstream form and silently
+        ignored unless it's the *only* identifier supplied (in which case
+        a ``ValueError`` is raised so the agent doesn't get a misleading
+        empty result).
+        """
+        if not file_number:
+            raise ValueError("NRW lookup requires file_number (ecli not supported)")
+
+        data = {
+            "gerichtstyp": "",
+            "von2": "",
+            "q": "*",
+            "absenden": "Suchen",
+            "schlagwoerter": "",
+            "method": "stem",
+            "von": "",
+            "aktenzeichen": file_number,
+            "bis": "",
+            "bis2": "",
+            "advanced_search": "true",
+            "sortieren_nach": "datum_absteigend",
+            "date": "",
+            "qSize": max(int(limit) * 2, 20),
+            "entscheidungsart": "",
+            "gerichtsort": "",
+            "validFrom": "",
+            "gerichtsbarkeit": "",
+            "page1": "1",
+        }
+        resp = self._post(f"{NRW_SEARCH_URL}#solrNrwe", data=data)
+        tree = lxml.html.fromstring(resp.text)
+
+        candidates: list[dict] = []
+        for link in CSSSelector(".einErgebnis a")(tree):
+            href = link.attrib.get("href", "")
+            if not href:
+                continue
+            label = link.text_content().strip()
+            # NRWE link text is "<file_number> - <court_name>". The doc
+            # filename also encodes the date (...j2026/...20261006.html)
+            # but we leave date extraction to lookup_fetch.
+            az = label
+            court = ""
+            if " - " in label:
+                az, court = label.split(" - ", 1)
+            candidates.append(
+                {
+                    "doc_id": href,
+                    "court_name": court.strip(),
+                    "file_number": az.strip(),
+                    "date": "",
+                    "ecli": "",
+                    "type": "",
+                    "snippet": label[:200],
+                }
+            )
+            if len(candidates) >= limit:
+                break
+        return candidates
+
+    def lookup_fetch(self, doc_id: str) -> dict | None:
+        """Fetch a full NRW decision by its source URL.
+
+        For NRW the ``doc_id`` is the absolute case URL itself
+        (``https://nrwe.justiz.nrw.de/.../*.html``) — that's what the
+        search response returns and what
+        :meth:`_parse_case_from_html` already knows how to parse.
+        Reuses the streaming-flow parser with no special-casing.
+        """
+        try:
+            html_str = self._get(doc_id).text
+        except requests.RequestException as exc:
+            logger.warning("Failed to fetch NRW case %s: %s", doc_id, exc)
+            return None
+        try:
+            return self._parse_case_from_html(html_str, doc_id)
+        except Exception as exc:
+            logger.warning("Failed to parse NRW case %s: %s", doc_id, exc)
+            return None
