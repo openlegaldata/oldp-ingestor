@@ -138,25 +138,44 @@ class NrwCaseProvider(ScraperBaseClient, CaseProvider):
         """Parse NRW HTML case page and return OLDP case dict."""
         tree = lxml.html.fromstring(html_str)
 
-        # Extract content from p.absatzLinks parent
-        content = None
+        # Extract content from p.absatzLinks parent (the Gründe body).
+        body = None
         for m in tree.xpath('//p[contains(@class, "absatzLinks")]'):
-            content = self.get_inner_html(m.getparent())
+            body = self.get_inner_html(m.getparent())
             break
 
-        if content is None:
-            logger.warning("Could not find content from: %s", source_url)
-            return None
-
-        # Prepend tenor to content
+        # Extract Tenor block (may be the only published content for some
+        # OVG NRW asylum rejections — e.g. ``1_A_367_26_A_Beschluss_*.html``
+        # publishes only the operative part with no Gründe section).
+        tenor_html = None
         for tenor_match in tree.xpath(
             '//div[contains(@class, "feldbezeichnung") and text()="Tenor:"]'
             "/following-sibling::div[1]"
         ):
-            tenor = self.get_inner_html(tenor_match).strip()
-            content = (
-                "<h2>Tenor</h2>\n\n" + tenor + '<br style="clear:both">\n\n' + content
-            )
+            t = self.get_inner_html(tenor_match).strip()
+            if t:
+                tenor_html = t
+                break
+
+        if body is None and tenor_html is None:
+            logger.warning("Could not find content from: %s", source_url)
+            return None
+
+        if body is None:
+            # Tenor-only decision (operative part published without
+            # reasoning). The Tenor is enough to constitute a case
+            # record — preserving these matches what NRW actually
+            # publishes rather than dropping them as "no content".
+            content = "<h2>Tenor</h2>\n\n" + tenor_html
+        else:
+            content = body
+            if tenor_html is not None:
+                content = (
+                    "<h2>Tenor</h2>\n\n"
+                    + tenor_html
+                    + '<br style="clear:both">\n\n'
+                    + content
+                )
 
         # Mark section headlines
         content = re.sub(

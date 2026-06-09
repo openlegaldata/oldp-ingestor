@@ -138,13 +138,22 @@ Returns a **plain JSON list** (not a hydra collection) of court objects:
 
 ```json
 [
-  {"id": "BGH", "count": 33541, "label": "Bundesgerichtshof"},
-  {"id": "BFH", "count": 11379, "label": "Bundesfinanzhof"},
+  {"id": "BGH Karlsruhe", "count": 33541, "label": "Bundesgerichtshof Karlsruhe"},
+  {"id": "BFH München", "count": 11379, "label": "Bundesfinanzhof München"},
   ...
 ]
 ```
 
 The ingestor caches this on first use to resolve court codes to full names.
+
+**Seat-city suffix override**: every federal-court entry ships with the
+court's seat city appended to both `id` and `label` (verified 2026-06-04;
+applies to BGH, BFH, BVerwG, BPatG, BAG, BSG, BVerfG). OLDP only
+recognises the canonical institutional name, so posting the API label
+verbatim yielded 400 `court_not_found` in prod
+(2026-05-28 `cases-ris` error on `III ZR 56/25`). The provider
+short-circuits these labels via `_RIS_COURT_LABEL_OVERRIDES` in
+`ris_cases.py` and emits the bare court name (e.g. `Bundesgerichtshof`).
 
 ## Field mapping: RIS to OLDP
 
