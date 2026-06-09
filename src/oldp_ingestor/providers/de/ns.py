@@ -11,6 +11,7 @@ import lxml.html
 import requests
 
 from oldp_ingestor.providers.base import CaseProvider
+from oldp_ingestor.providers.lookup import LookupCapability, LookupMixin
 from oldp_ingestor.providers.scraper_common import ScraperBaseClient
 
 logger = logging.getLogger(__name__)
@@ -20,8 +21,23 @@ NS_SEARCH_PATH = "/search"
 NS_PER_PAGE = 12  # fixed by the portal
 NS_MAX_PAGE = 5000
 
+# OLDP state id for Niedersachsen (matches the portal's jurisdiction).
+_NS_STATE_ID = 11
 
-class NsCaseProvider(ScraperBaseClient, CaseProvider):
+# Pattern matching ``<a href="/browse/document/<uuid>" hreflang="...">
+# <court>, <date> - <AZ> [- <title>]</a>`` in the search-result HTML.
+# The full label gives the agent enough metadata to judge a candidate
+# without an extra fetch.
+_NS_RESULT_LINK_RE = re.compile(
+    r'<h3><a href="(/browse/document/[a-f0-9-]{36})"[^>]*>([^<]+)</a></h3>'
+)
+_NS_LABEL_RE = re.compile(
+    r"^(?P<court>[^,]+),\s*(?P<date>\d{1,2}\.\d{1,2}\.\d{4})\s*-\s*"
+    r"(?P<az>[^-\n]+?)(?:\s*-\s*(?P<title>.*))?$"
+)
+
+
+class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
     """Fetches case law from voris.wolterskluwer-online.de (Niedersachsen).
 
     Uses GET-based search with query parameters. The site is a Drupal 11
@@ -41,6 +57,12 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
         "name": "NI-VORIS Niedersachsen",
         "homepage": "https://voris.wolterskluwer-online.de",
     }
+
+    LOOKUP_CAPABILITY = LookupCapability(
+        keys=("file_number",),
+        court_filter={"state_ids": [_NS_STATE_ID]},
+        cost="medium",
+    )
 
     def __init__(
         self,
@@ -240,3 +262,87 @@ class NsCaseProvider(ScraperBaseClient, CaseProvider):
     def get_cases(self) -> list[dict]:
         """Materialise :meth:`iter_cases` as a list. Prefer streaming."""
         return list(self.iter_cases())
+
+    # ------------------------------------------------------------------
+    # Targeted citation-based lookup (LookupMixin)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise_az(az: str) -> str:
+        return " ".join(az.split()).lower()
+
+    def lookup_search(
+        self,
+        file_number: str | None = None,
+        ecli: str | None = None,
+        court_hint: str | None = None,
+        date: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Look up a specific NDS decision by Aktenzeichen.
+
+        voris has no dedicated AZ field but its ``query=`` parameter
+        accepts a quoted exact-match phrase that resolves to a small
+        candidate set. Candidates are still filtered client-side for the
+        exact AZ to drop near-matches from the same court.
+
+        ``ecli`` is not exposed in voris's search index — calls relying
+        on it raise ``ValueError`` so the agent doesn't misread an empty
+        result.
+        """
+        if not file_number:
+            raise ValueError("voris lookup requires file_number (ecli not supported)")
+
+        params = {
+            "query": f'"{file_number}"',
+            "publicationtype": "publicationform-ats-filter!ATS_Rechtsprechung",
+            "sort_order": "date_desc",
+            "page": "0",
+        }
+        resp = self._get(NS_SEARCH_PATH, params=params)
+        norm_target = self._normalise_az(file_number)
+
+        candidates: list[dict] = []
+        for href, label in _NS_RESULT_LINK_RE.findall(resp.text):
+            m = _NS_LABEL_RE.match(label)
+            if not m:
+                continue
+            az = m.group("az").strip()
+            if self._normalise_az(az) != norm_target:
+                continue
+            german_date = m.group("date").strip()
+            iso_date = self.parse_german_date(german_date) if german_date else ""
+            candidates.append(
+                {
+                    "doc_id": href,
+                    "court_name": m.group("court").strip(),
+                    "file_number": az,
+                    "date": iso_date,
+                    "ecli": "",
+                    "type": "",
+                    "snippet": (m.group("title") or "").strip()[:200] or label[:200],
+                }
+            )
+            if len(candidates) >= limit:
+                break
+        return candidates
+
+    def lookup_fetch(self, doc_id: str) -> dict | None:
+        """Fetch the full voris case dict for ``doc_id``.
+
+        ``doc_id`` here is the document path returned by
+        :meth:`lookup_search` (``/browse/document/<uuid>``). Reuses the
+        SSR HTML parser; the same Cloudflare 4xx behaviour as the
+        streaming flow applies — callers see the raw exception.
+        """
+        try:
+            html_str = self._get(doc_id).text
+        except requests.RequestException as exc:
+            logger.warning("Failed to fetch voris case %s: %s", doc_id, exc)
+            return None
+        case_url = f"{NS_BASE_URL}{doc_id}"
+        try:
+            return self._parse_case_from_html(html_str, case_url)
+        except Exception as exc:
+            logger.warning("Failed to parse voris case %s: %s", case_url, exc)
+            return None

@@ -1083,6 +1083,70 @@ def main():
         help="Output format (default: table)",
     )
 
+    # --- lookup ------------------------------------------------------
+    # Targeted citation-based lookup for AI agents. Each subcommand is
+    # one upstream request that returns JSON with a three-status
+    # contract (ok / not_found / error). See ``docs/lookup.md``.
+    from oldp_ingestor.cli_lookup import lookup_provider_names
+
+    lookup_parser = subparsers.add_parser(
+        "lookup",
+        help="Targeted citation-based lookup (one upstream call, JSON output)",
+    )
+    lookup_subparsers = lookup_parser.add_subparsers(dest="lookup_command")
+
+    lp_providers = lookup_subparsers.add_parser(
+        "providers", help="List lookup-capable providers + court coverage"
+    )
+    lp_providers.add_argument(
+        "--no-resolve-courts",
+        dest="resolve_courts",
+        action="store_false",
+        default=True,
+        help="Skip the live OLDP courts API call; emit only the raw "
+        "provider-side court_filter declarations.",
+    )
+
+    _lookup_names = lookup_provider_names()
+    for sub_name, helptext in (
+        ("search", "Search a provider by file_number / ecli; returns candidates"),
+        ("fetch", "Fetch a full case by (provider, doc_id)"),
+        ("ingest", "Fetch + POST to OLDP; idempotent (409 → already_exists)"),
+    ):
+        sp = lookup_subparsers.add_parser(sub_name, help=helptext)
+        sp.add_argument(
+            "--provider",
+            required=True,
+            choices=_lookup_names,
+            help="Lookup-capable provider",
+        )
+        sp.add_argument(
+            "--request-delay",
+            type=float,
+            default=0.2,
+            help="Delay before the upstream request (default: 0.2)",
+        )
+        if sub_name == "search":
+            sp.add_argument("--file-number", help="Aktenzeichen to look up")
+            sp.add_argument("--ecli", help="ECLI to look up (RIS only)")
+            sp.add_argument(
+                "--court-hint",
+                help="Optional court code to narrow the search (e.g. BGH)",
+            )
+            sp.add_argument("--date", help="Optional decision date hint (YYYY-MM-DD)")
+            sp.add_argument(
+                "--limit",
+                type=int,
+                default=10,
+                help="Max candidates to return (default: 10)",
+            )
+        else:
+            sp.add_argument(
+                "--doc-id",
+                required=True,
+                help="Provider-specific document id (from a search candidate)",
+            )
+
     replay_parser = subparsers.add_parser(
         "replay",
         help="Replay failed cases from a saved JSON file (no re-scraping)",
@@ -1120,7 +1184,7 @@ def main():
 
     # Subcommands that perform network I/O must identify themselves.
     # status/analyze-courts read local result files only — UA not needed.
-    _NETWORK_COMMANDS = {"info", "laws", "cases", "replay"}
+    _NETWORK_COMMANDS = {"info", "laws", "cases", "replay", "lookup"}
     if args.command in _NETWORK_COMMANDS:
         try:
             http_client.configure_user_agent(
@@ -1137,6 +1201,24 @@ def main():
         "status": cmd_status,
         "analyze-courts": cmd_analyze_courts,
     }
+
+    if args.command == "lookup":
+        from oldp_ingestor import cli_lookup
+
+        lookup_dispatchers = {
+            "providers": cli_lookup.cmd_lookup_providers,
+            "search": cli_lookup.cmd_lookup_search,
+            "fetch": cli_lookup.cmd_lookup_fetch,
+            "ingest": cli_lookup.cmd_lookup_ingest,
+        }
+        sub = getattr(args, "lookup_command", None)
+        if not sub:
+            lookup_parser.print_help()
+            sys.exit(1)
+        exit_code = lookup_dispatchers[sub](args)
+        if exit_code:
+            sys.exit(exit_code)
+        return
 
     exit_code = commands[args.command](args)
     if exit_code:
