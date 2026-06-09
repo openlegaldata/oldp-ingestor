@@ -29,6 +29,14 @@ RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN playwright install --with-deps chromium
 
+# Cron orchestration scripts (bootstrap, ingest wrapper, health/anomaly/report).
+# Baked into the image at /app/ so any host running this image gets them — the
+# deployment only bind-mounts the crontab (schedule) and the data dirs over
+# these. Provider capabilities the scripts need are read at runtime from
+# `oldp-ingestor providers`, so no provider rosters are duplicated here.
+COPY scripts/ /app/
+RUN chmod +x /app/*.sh /app/*.py
+
 RUN useradd --create-home ingestor
 USER ingestor
 
