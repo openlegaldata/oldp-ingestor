@@ -112,9 +112,13 @@ class JurisCaseProvider(LookupMixin, PlaywrightBaseClient, CaseProvider):
         ".result-list__title, .no-results-body, "
         ".docLayoutText, .jportal-content"
     )
-    # Timeout for SPA rendering (ms). Individual subclasses can bump this
-    # for portals known to render slowly (see HhCaseProvider).
-    SPA_TIMEOUT: int = 15000
+    # Timeout for SPA rendering (ms). 15s was too tight: prod 2026-05-28..06-04
+    # saw juris-he/mv/rlp/sa/th repeatedly time out on the post-submit
+    # ``wait_for_selector`` while the portal API was still returning the
+    # first results page. 30s matches the upstream search-API p95 we
+    # observed and clears the timeouts in dev without making the happy
+    # path slower (selector resolves the moment results render).
+    SPA_TIMEOUT: int = 30000
 
     def __init__(
         self,

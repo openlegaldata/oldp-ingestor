@@ -84,6 +84,12 @@ Day-level date ranges (DD.MM.YYYY) return 0 results and are not supported by
 the portal. Therefore, day-level precision is applied client-side via
 `_is_within_date_range` after fetching.
 
+When `date_from` / `date_to` exclude documents, `get_cases` logs an
+`Excluded N/M document(s) by date range` summary at the end of the run.
+Without this, "Found 0 case(s)" was indistinguishable from a parser bug
+(prod 2026-05-28..06-04 saw 90+ doc fetches every day with all results
+silently dropped).
+
 ## Known Quirks
 
 - **Single-page results**: The search returns all matching results on a single
