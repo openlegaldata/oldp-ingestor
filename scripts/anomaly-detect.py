@@ -90,9 +90,7 @@ def is_playwright(provider, command):
 def monitored_providers():
     """(command, provider) pairs to staleness-check: all case providers from
     the package, plus the explicitly-chosen law providers."""
-    cases = sorted(
-        (cmd, prov) for (cmd, prov) in capabilities() if cmd == "cases"
-    )
+    cases = sorted((cmd, prov) for (cmd, prov) in capabilities() if cmd == "cases")
     laws = [("laws", prov) for prov in MONITORED_LAW_PROVIDERS]
     return laws + cases
 
@@ -114,7 +112,8 @@ def load_history():
 
 def get_provider_history(entries, provider, command):
     return [
-        e for e in entries
+        e
+        for e in entries
         if e.get("provider") == provider and e.get("command") == command
     ]
 
@@ -138,6 +137,7 @@ def check_anomaly(provider, command, history):
     created = latest.get("created", 0)
     skipped = latest.get("skipped", 0)
     found = created + skipped
+    errors = latest.get("errors", 0)
     status = latest.get("status", "unknown")
     exit_code = latest.get("exit_code", 0)
 
@@ -145,7 +145,18 @@ def check_anomaly(provider, command, history):
     if exit_code == 2:
         return ("CRASH", f"{command}/{provider}: crashed (exit code 2)")
 
-    baseline_runs = runs[-(BASELINE_POINTS + 1):-1]  # exclude latest
+    # Errors — the run completed but some documents failed to ingest (e.g.
+    # court_not_found, validation), saved to failed_<provider>.json for replay.
+    # Surfaced regardless of counts; these are data loss and were previously
+    # invisible to the monitor.
+    if errors > 0 or status == "partial":
+        return (
+            "ERRORS",
+            f"{command}/{provider}: {errors} error(s) "
+            f"(status={status}, exit={exit_code}) — see failed_{provider}.json",
+        )
+
+    baseline_runs = runs[-(BASELINE_POINTS + 1) : -1]  # exclude latest
     if len(baseline_runs) < 3:
         return None  # not enough data to tell "sparse" from "broken"
 
@@ -173,10 +184,16 @@ def check_anomaly(provider, command, history):
     # creates 0 but skips many just re-saw its window (nothing new), which is
     # healthy, not a drop.
     if skipped == 0 and created < avg * LOW_THRESHOLD:
-        return ("LOW", f"{command}/{provider}: created={created} < baseline avg {avg:.0f} * {LOW_THRESHOLD} = {avg * LOW_THRESHOLD:.0f}")
+        return (
+            "LOW",
+            f"{command}/{provider}: created={created} < baseline avg {avg:.0f} * {LOW_THRESHOLD} = {avg * LOW_THRESHOLD:.0f}",
+        )
 
     if created > avg * HIGH_THRESHOLD:
-        return ("HIGH", f"{command}/{provider}: created={created} > baseline avg {avg:.0f} * {HIGH_THRESHOLD} = {avg * HIGH_THRESHOLD:.0f}")
+        return (
+            "HIGH",
+            f"{command}/{provider}: created={created} > baseline avg {avg:.0f} * {HIGH_THRESHOLD} = {avg * HIGH_THRESHOLD:.0f}",
+        )
 
     return None
 
@@ -192,19 +209,23 @@ def check_staleness(provider, command, history):
     try:
         last_time = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
-        return ("PARSE_ERROR", f"{command}/{provider}: cannot parse finished_at '{finished_at}'")
+        return (
+            "PARSE_ERROR",
+            f"{command}/{provider}: cannot parse finished_at '{finished_at}'",
+        )
 
     now = datetime.now(timezone.utc)
     hours_ago = (now - last_time).total_seconds() / 3600
 
     threshold = (
-        STALE_HOURS_PLAYWRIGHT
-        if is_playwright(provider, command)
-        else STALE_HOURS_HTTP
+        STALE_HOURS_PLAYWRIGHT if is_playwright(provider, command) else STALE_HOURS_HTTP
     )
 
     if hours_ago > threshold:
-        return ("STALE", f"{command}/{provider}: last run {hours_ago:.0f}h ago (threshold: {threshold}h)")
+        return (
+            "STALE",
+            f"{command}/{provider}: last run {hours_ago:.0f}h ago (threshold: {threshold}h)",
+        )
 
     return None
 
@@ -253,8 +274,14 @@ def check_all():
 def main():
     parser = argparse.ArgumentParser(description="OLDP ingestor anomaly detection")
     parser.add_argument("provider", nargs="?", help="Provider name")
-    parser.add_argument("command", nargs="?", default="cases", help="Command (default: cases)")
-    parser.add_argument("--check-all", action="store_true", help="Check all providers for staleness and anomalies")
+    parser.add_argument(
+        "command", nargs="?", default="cases", help="Command (default: cases)"
+    )
+    parser.add_argument(
+        "--check-all",
+        action="store_true",
+        help="Check all providers for staleness and anomalies",
+    )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
 

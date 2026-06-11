@@ -72,6 +72,21 @@ def test_crash_flagged(mod):
     assert result is not None and result[0] == "CRASH"
 
 
+def test_errors_flagged(mod):
+    # A run that completed but failed to ingest some docs (court_not_found etc.).
+    history = [_run(created=5) for _ in range(13)] + [
+        _run(created=0, skipped=0, errors=3, status="partial", exit_code=1)
+    ]
+    result = mod.check_anomaly("p", "cases", history)
+    assert result is not None and result[0] == "ERRORS"
+
+
+def test_partial_status_flagged_even_with_zero_errors_field(mod):
+    history = [_run(created=5) for _ in range(13)] + [_run(status="partial")]
+    result = mod.check_anomaly("p", "cases", history)
+    assert result is not None and result[0] == "ERRORS"
+
+
 def test_high_burst_flagged(mod):
     history = [_run(created=2, skipped=0) for _ in range(13)] + [
         _run(created=50, skipped=0)
