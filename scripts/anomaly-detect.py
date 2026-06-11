@@ -10,10 +10,13 @@ Usage:
     anomaly-detect.py --check-all          # check all providers for staleness
 
 Environment variables:
-    ANOMALY_LOW_THRESHOLD   — flag if created < baseline * threshold (default: 0.2)
-    ANOMALY_HIGH_THRESHOLD  — flag if created > baseline * threshold (default: 5.0)
-    STALE_HOURS_HTTP        — HTTP provider stale after N hours (default: 36)
-    STALE_HOURS_PLAYWRIGHT  — Playwright provider stale after N hours (default: 192)
+    ANOMALY_LOW_THRESHOLD     — flag if created < baseline * threshold (default: 0.2)
+    ANOMALY_HIGH_THRESHOLD    — flag if created > baseline * threshold (default: 5.0)
+    ANOMALY_ZERO_MIN_BASELINE — min baseline avg (created+skipped) for a
+                                found-nothing run to count as ZERO (default: 1.0);
+                                below this the provider is treated as sparse
+    STALE_HOURS_HTTP          — HTTP provider stale after N hours (default: 36)
+    STALE_HOURS_PLAYWRIGHT    — Playwright provider stale after N hours (default: 192)
 """
 
 import argparse
@@ -30,6 +33,12 @@ LOW_THRESHOLD = float(os.environ.get("ANOMALY_LOW_THRESHOLD", "0.2"))
 HIGH_THRESHOLD = float(os.environ.get("ANOMALY_HIGH_THRESHOLD", "5.0"))
 STALE_HOURS_HTTP = int(os.environ.get("STALE_HOURS_HTTP", "36"))
 STALE_HOURS_PLAYWRIGHT = int(os.environ.get("STALE_HOURS_PLAYWRIGHT", "192"))
+# A run that found nothing (created=0 AND skipped=0) is only an anomaly for a
+# provider that normally finds documents. If the baseline average of
+# (created+skipped) is below this, the provider is treated as legitimately
+# sparse — a small court or an empty rolling window — and a quiet day is not
+# flagged. Most OLDP providers are low-volume, so without this they false-alarm.
+ZERO_MIN_BASELINE = float(os.environ.get("ANOMALY_ZERO_MIN_BASELINE", "1.0"))
 
 # Law providers monitored for staleness. The case roster is derived from the
 # ingestor package (see monitored_providers); laws are listed explicitly here
@@ -111,7 +120,16 @@ def get_provider_history(entries, provider, command):
 
 
 def check_anomaly(provider, command, history):
-    """Check latest run against rolling baseline. Returns (anomaly_type, message) or None."""
+    """Check latest run against rolling baseline. Returns (anomaly_type, message) or None.
+
+    Counts mean: ``created`` = new cases ingested, ``skipped`` = cases found
+    but already in OLDP (409 dedup). In the rolling-window-with-dedup model a
+    healthy provider in steady state re-sees its window each run, so
+    ``created`` is naturally 0 most days while ``skipped`` > 0; only genuinely
+    new decisions bump ``created``. Anomalies are judged against ``found`` =
+    ``created + skipped`` (did it see anything at all?) so quiet, low-volume
+    providers are not mistaken for broken ones.
+    """
     runs = get_provider_history(history, provider, command)
     if not runs:
         return None
@@ -119,6 +137,7 @@ def check_anomaly(provider, command, history):
     latest = runs[-1]
     created = latest.get("created", 0)
     skipped = latest.get("skipped", 0)
+    found = created + skipped
     status = latest.get("status", "unknown")
     exit_code = latest.get("exit_code", 0)
 
@@ -126,20 +145,34 @@ def check_anomaly(provider, command, history):
     if exit_code == 2:
         return ("CRASH", f"{command}/{provider}: crashed (exit code 2)")
 
-    # Zero results
-    if created == 0 and skipped == 0 and status == "ok":
-        return ("ZERO", f"{command}/{provider}: zero results (created=0, skipped=0)")
-
-    # Need enough baseline points
     baseline_runs = runs[-(BASELINE_POINTS + 1):-1]  # exclude latest
     if len(baseline_runs) < 3:
-        return None  # not enough data
+        return None  # not enough data to tell "sparse" from "broken"
+
+    # ZERO — the provider found nothing this run. Only an anomaly if it
+    # normally finds documents; a genuinely sparse provider (small court,
+    # empty rolling window) is expected to be quiet, so suppress it. Returns
+    # here either way so a sparse quiet day never falls through to LOW.
+    if found == 0 and status == "ok":
+        baseline_found = sum(
+            r.get("created", 0) + r.get("skipped", 0) for r in baseline_runs
+        ) / len(baseline_runs)
+        if baseline_found >= ZERO_MIN_BASELINE:
+            return (
+                "ZERO",
+                f"{command}/{provider}: found nothing (created=0, skipped=0) "
+                f"but baseline avg found {baseline_found:.1f}",
+            )
+        return None
 
     avg = sum(r.get("created", 0) for r in baseline_runs) / len(baseline_runs)
     if avg == 0:
         return None  # can't compute ratio
 
-    if created < avg * LOW_THRESHOLD:
+    # LOW — fewer *documents* than usual. Only when skipped==0: a run that
+    # creates 0 but skips many just re-saw its window (nothing new), which is
+    # healthy, not a drop.
+    if skipped == 0 and created < avg * LOW_THRESHOLD:
         return ("LOW", f"{command}/{provider}: created={created} < baseline avg {avg:.0f} * {LOW_THRESHOLD} = {avg * LOW_THRESHOLD:.0f}")
 
     if created > avg * HIGH_THRESHOLD:
