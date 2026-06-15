@@ -117,3 +117,12 @@ fallback in case EUR-Lex deploys WAF blocking again.
   constructing content URLs.
 - **WAF resilience**: If EUR-Lex re-enables its AWS WAF (detected by `aws-waf-token` in
   response body), the provider automatically falls back to the CELLAR endpoint.
+- **Expected 404s**: many CELEX numbers returned by SPARQL have no HTML
+  rendering on either EUR-Lex or CELLAR (recent judgments still
+  indexing, `_EXT` variants, etc.). The 404 path is treated as a
+  permanent failure for the failure-tracker but logged at INFO instead
+  of WARNING — every "missing" CELEX otherwise produced two paired
+  warnings (one for EUR-Lex, one for CELLAR fallback) per run with no
+  actionable signal (prod 2026-05-28..06-04: ~30 warnings/week of
+  exclusively-expected 404s). HTTP 5xx / 202 / WAF challenges keep
+  their original log levels.

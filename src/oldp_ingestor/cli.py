@@ -14,6 +14,7 @@ from oldp_ingestor.court_analysis import (
     format_tsv,
     parse_missing_courts,
 )
+from oldp_ingestor.providers import registry
 from oldp_ingestor.providers.base import CaseProvider, LawProvider
 from oldp_ingestor.providers.failure_tracker import (
     FailureTracker,
@@ -585,18 +586,10 @@ def cmd_replay(args):
         return 2
 
 
-_JURIS_PROVIDERS = {
-    "juris-bb": "BbBeCaseProvider",
-    "juris-hh": "HhCaseProvider",
-    "juris-mv": "MvCaseProvider",
-    "juris-rlp": "RlpCaseProvider",
-    "juris-sa": "SaCaseProvider",
-    "juris-sh": "ShCaseProvider",
-    "juris-bw": "BwCaseProvider",
-    "juris-sl": "SlCaseProvider",
-    "juris-he": "HeCaseProvider",
-    "juris-th": "ThCaseProvider",
-}
+# Derived from the central provider registry so the juris roster lives in
+# exactly one place (registry.py), shared with the `providers` capability
+# command and the cron scripts.
+_JURIS_PROVIDERS = registry.juris_case_classes()
 
 
 def _make_case_provider(args) -> CaseProvider:
@@ -766,6 +759,19 @@ def cmd_status(args):
     return 0 if healthy else 1
 
 
+def cmd_providers(args):
+    """Emit the provider capability map as JSON.
+
+    Read by the cron orchestration scripts (ingest.sh, anomaly-detect.py)
+    so they no longer hard-code which providers are Playwright-based or
+    support incremental ``--date-from`` fetching. Introspects the provider
+    classes via :mod:`oldp_ingestor.providers.registry`; no network I/O.
+    """
+    caps = registry.capabilities(getattr(args, "for_command", None))
+    print(json.dumps(caps, indent=2))
+    return 0
+
+
 def _fetch_all_pages(client, path):
     """Fetch all pages from a DRF paginated endpoint."""
     items = []
@@ -911,7 +917,7 @@ def main():
     laws_parser.add_argument(
         "--provider",
         required=True,
-        choices=["dummy", "ris", "gii", "eurlex"],
+        choices=["dummy", *registry.law_provider_names()],
         help="Data source provider",
     )
     laws_parser.add_argument(
@@ -976,29 +982,7 @@ def main():
     )
 
     cases_parser = subparsers.add_parser("cases", help="Ingest cases into OLDP")
-    _case_choices = [
-        "dummy",
-        "ris",
-        "rii",
-        "by",
-        "nrw",
-        "ns",
-        "eu",
-        "hb",
-        "sn-ovg",
-        "sn",
-        "sn-verfgh",
-        "juris-bb",
-        "juris-hh",
-        "juris-mv",
-        "juris-rlp",
-        "juris-sa",
-        "juris-sh",
-        "juris-bw",
-        "juris-sl",
-        "juris-he",
-        "juris-th",
-    ]
+    _case_choices = ["dummy", *registry.case_provider_names()]
     cases_parser.add_argument(
         "--provider",
         required=True,
@@ -1067,6 +1051,17 @@ def main():
         help="Output status as JSON",
     )
 
+    providers_parser = subparsers.add_parser(
+        "providers",
+        help="List ingest providers and their capabilities (kind, date_from) as JSON",
+    )
+    providers_parser.add_argument(
+        "--command",
+        dest="for_command",
+        choices=["cases", "laws"],
+        help="Limit output to one command group (default: both)",
+    )
+
     analyze_parser = subparsers.add_parser(
         "analyze-courts",
         help="Analyse missing courts from ingestor logs",
@@ -1082,6 +1077,70 @@ def main():
         default="table",
         help="Output format (default: table)",
     )
+
+    # --- lookup ------------------------------------------------------
+    # Targeted citation-based lookup for AI agents. Each subcommand is
+    # one upstream request that returns JSON with a three-status
+    # contract (ok / not_found / error). See ``docs/lookup.md``.
+    from oldp_ingestor.cli_lookup import lookup_provider_names
+
+    lookup_parser = subparsers.add_parser(
+        "lookup",
+        help="Targeted citation-based lookup (one upstream call, JSON output)",
+    )
+    lookup_subparsers = lookup_parser.add_subparsers(dest="lookup_command")
+
+    lp_providers = lookup_subparsers.add_parser(
+        "providers", help="List lookup-capable providers + court coverage"
+    )
+    lp_providers.add_argument(
+        "--no-resolve-courts",
+        dest="resolve_courts",
+        action="store_false",
+        default=True,
+        help="Skip the live OLDP courts API call; emit only the raw "
+        "provider-side court_filter declarations.",
+    )
+
+    _lookup_names = lookup_provider_names()
+    for sub_name, helptext in (
+        ("search", "Search a provider by file_number / ecli; returns candidates"),
+        ("fetch", "Fetch a full case by (provider, doc_id)"),
+        ("ingest", "Fetch + POST to OLDP; idempotent (409 → already_exists)"),
+    ):
+        sp = lookup_subparsers.add_parser(sub_name, help=helptext)
+        sp.add_argument(
+            "--provider",
+            required=True,
+            choices=_lookup_names,
+            help="Lookup-capable provider",
+        )
+        sp.add_argument(
+            "--request-delay",
+            type=float,
+            default=0.2,
+            help="Delay before the upstream request (default: 0.2)",
+        )
+        if sub_name == "search":
+            sp.add_argument("--file-number", help="Aktenzeichen to look up")
+            sp.add_argument("--ecli", help="ECLI to look up (RIS only)")
+            sp.add_argument(
+                "--court-hint",
+                help="Optional court code to narrow the search (e.g. BGH)",
+            )
+            sp.add_argument("--date", help="Optional decision date hint (YYYY-MM-DD)")
+            sp.add_argument(
+                "--limit",
+                type=int,
+                default=10,
+                help="Max candidates to return (default: 10)",
+            )
+        else:
+            sp.add_argument(
+                "--doc-id",
+                required=True,
+                help="Provider-specific document id (from a search candidate)",
+            )
 
     replay_parser = subparsers.add_parser(
         "replay",
@@ -1120,7 +1179,7 @@ def main():
 
     # Subcommands that perform network I/O must identify themselves.
     # status/analyze-courts read local result files only — UA not needed.
-    _NETWORK_COMMANDS = {"info", "laws", "cases", "replay"}
+    _NETWORK_COMMANDS = {"info", "laws", "cases", "replay", "lookup"}
     if args.command in _NETWORK_COMMANDS:
         try:
             http_client.configure_user_agent(
@@ -1135,8 +1194,27 @@ def main():
         "cases": cmd_cases,
         "replay": cmd_replay,
         "status": cmd_status,
+        "providers": cmd_providers,
         "analyze-courts": cmd_analyze_courts,
     }
+
+    if args.command == "lookup":
+        from oldp_ingestor import cli_lookup
+
+        lookup_dispatchers = {
+            "providers": cli_lookup.cmd_lookup_providers,
+            "search": cli_lookup.cmd_lookup_search,
+            "fetch": cli_lookup.cmd_lookup_fetch,
+            "ingest": cli_lookup.cmd_lookup_ingest,
+        }
+        sub = getattr(args, "lookup_command", None)
+        if not sub:
+            lookup_parser.print_help()
+            sys.exit(1)
+        exit_code = lookup_dispatchers[sub](args)
+        if exit_code:
+            sys.exit(exit_code)
+        return
 
     exit_code = commands[args.command](args)
     if exit_code:

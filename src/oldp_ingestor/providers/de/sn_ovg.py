@@ -113,19 +113,25 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
                 ids.append(doc_id)
         return ids
 
-    def _fetch_document(self, doc_id: str) -> tuple[dict | None, bool]:
+    def _fetch_document(self, doc_id: str) -> tuple[dict | None, bool, bool]:
         """Fetch document detail page and extract case data.
 
-        Returns ``(case_or_None, permanent_failure)`` so the caller can
-        feed permanent failures into the FailureTracker without burning
-        retry slots on transient network errors.
+        Returns ``(case_or_None, permanent_failure, out_of_window)``:
+          * ``case_or_None``: parsed case dict or None
+          * ``permanent_failure``: True when the URL is structurally broken
+            and should be fed to the FailureTracker (vs a transient
+            network/PDF error that should be retried next run).
+          * ``out_of_window``: True when the document parsed fine but its
+            decision date sits outside the configured ``date_from`` /
+            ``date_to`` window — the caller surfaces this in an end-of-run
+            summary so "Found 0 case(s)" no longer hides what happened.
         """
         url = f"/document.phtml?id={doc_id}"
         try:
             resp = self._get(url)
         except requests.RequestException as exc:
             logger.warning("Failed to fetch document %s: %s", doc_id, exc)
-            return None, False  # network → transient
+            return None, False, False  # network → transient
 
         tree = lxml.html.fromstring(resp.text)
 
@@ -133,7 +139,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         header_div = tree.xpath('//td[@class="schattiert gross"]//div[@style]')
         if not header_div:
             logger.warning("No header found for document %s", doc_id)
-            return None, True
+            return None, True, False
 
         from lxml import etree
 
@@ -146,7 +152,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
             logger.warning(
                 "Incomplete header for document %s: %s", doc_id, header_lines
             )
-            return None, True
+            return None, True, False
 
         court_name = header_lines[0]
         case_type = header_lines[1]
@@ -161,9 +167,9 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
 
         # Client-side date filtering — out-of-window is not a failure
         if self.date_from and date and date < self.date_from:
-            return None, False
+            return None, False, True
         if self.date_to and date and date > self.date_to:
-            return None, False
+            return None, False, True
 
         # Leitsatz: text after "Leitsatz:" in the dedicated table row
         abstract = None
@@ -201,7 +207,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
             logger.debug("No content for document %s, skipping", doc_id)
             # If the PDF was a network failure leave it transient; otherwise
             # the document page genuinely has no/short content (permanent).
-            return None, not pdf_failed
+            return None, not pdf_failed, False
 
         case: dict = {
             "court_name": court_name,
@@ -217,11 +223,12 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         if abstract:
             case["abstract"] = abstract
 
-        return case, False
+        return case, False, False
 
     def get_cases(self) -> list[dict]:
         """Search OVG and fetch individual document pages."""
         cases: list[dict] = []
+        date_filtered = 0
 
         logger.info("Searching OVG Bautzen...")
         try:
@@ -237,7 +244,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
                 continue
 
             try:
-                case, permanent_failure = self._fetch_document(doc_id)
+                case, permanent_failure, out_of_window = self._fetch_document(doc_id)
             except Exception as exc:
                 logger.warning("Failed to process document %s: %s", doc_id, exc)
                 self.failure_tracker.record_failure(doc_id, exc)
@@ -246,6 +253,8 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
             if case is not None:
                 self.failure_tracker.record_success(doc_id)
                 cases.append(case)
+            elif out_of_window:
+                date_filtered += 1
             elif permanent_failure:
                 self.failure_tracker.record_failure(
                     doc_id, "structural failure parsing document"
@@ -253,5 +262,18 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
 
             if self.limit and len(cases) >= self.limit:
                 break
+
+        # Surface the date-filter outcome — without this, "Found 0 case(s)"
+        # at the end of the run looks indistinguishable from a parsing
+        # failure even though the OVG search only supports year-level
+        # ``datum`` filtering and day-level pruning happens here.
+        if date_filtered:
+            logger.info(
+                "Excluded %d/%d document(s) by date range (date_from=%s date_to=%s)",
+                date_filtered,
+                len(doc_ids),
+                self.date_from or "-",
+                self.date_to or "-",
+            )
 
         return cases

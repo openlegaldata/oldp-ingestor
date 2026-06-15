@@ -18,11 +18,42 @@ from oldp_ingestor.providers.de.ris_common import (
     RISBaseClient,
     extract_body,
 )
+from oldp_ingestor.providers.lookup import LookupCapability, LookupMixin
 
 logger = logging.getLogger(__name__)
 
 
-class RISCaseProvider(RISBaseClient, CaseProvider):
+# All federal courts indexed by the RIS API. The codes match both the
+# RIS ``courtType`` filter and the OLDP ``court_type`` column, so a
+# single list serves the upstream query and the OLDP-side coverage
+# declaration used by the lookup mixin.
+_RIS_COURT_TYPES = ("BGH", "BFH", "BVerwG", "BAG", "BSG", "BPatG", "BVerfG")
+
+
+# Override court labels that the RIS API returns with a redundant
+# seat-city suffix. The API's ``/v1/case-law/courts`` endpoint emits
+# entries like ``id="BGH Karlsruhe" label="Bundesgerichtshof Karlsruhe"``
+# for every German federal court — the trailing city is the court's
+# seat, not part of the institutional name. Posting the label verbatim
+# to the OLDP API yielded 400 ``court_not_found`` (e.g. prod
+# 2026-05-28 02:15:13 for ``Bundesgerichtshof Karlsruhe``: OLDP only
+# knows the canonical name without the seat suffix).
+#
+# Keys are RIS court codes (the ``courtName`` field on each case item
+# and the ``id`` field on the courts endpoint — both carry the same
+# seat suffix). Values are the canonical OLDP court names.
+_RIS_COURT_LABEL_OVERRIDES: dict[str, str] = {
+    "BGH Karlsruhe": "Bundesgerichtshof",
+    "BFH München": "Bundesfinanzhof",
+    "BVerwG Leipzig": "Bundesverwaltungsgericht",
+    "BPatG München": "Bundespatentgericht",
+    "BAG Erfurt": "Bundesarbeitsgericht",
+    "BSG Kassel": "Bundessozialgericht",
+    "BVerfG Karlsruhe": "Bundesverfassungsgericht",
+}
+
+
+class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
     """Fetches case law from the RIS API.
 
     The RIS API does **not** honour ``decisionDateFrom`` / ``decisionDateTo``
@@ -47,6 +78,16 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
         "name": "Rechtsinformationssystem des Bundes (RIS)",
         "homepage": BASE_URL,
     }
+
+    # Citation-based lookup capability. ``court_types`` doubles as both
+    # the OLDP coverage declaration (these court_type codes are the
+    # exact federal-court codes OLDP carries) and the upstream filter
+    # used in :meth:`lookup_search`.
+    LOOKUP_CAPABILITY = LookupCapability(
+        keys=("file_number", "ecli", "court"),
+        court_filter={"court_types": list(_RIS_COURT_TYPES)},
+        cost="low",
+    )
 
     def __init__(
         self,
@@ -82,11 +123,17 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
     def _resolve_court_name(self, court_code: str) -> str:
         """Resolve a court code to its full name, with lazy loading and fallback.
 
+        Overrides in :data:`_RIS_COURT_LABEL_OVERRIDES` take precedence —
+        the RIS API ships federal-court labels with a seat-city suffix
+        that OLDP cannot resolve (see the override table for context).
+
         If the courts endpoint fails, an empty dict is cached for the lifetime
         of this provider instance (one CLI run).  Subsequent calls fall back to
         the raw court code — this is intentional fail-open behaviour that
         preserves data with degraded court names rather than aborting the run.
         """
+        if court_code in _RIS_COURT_LABEL_OVERRIDES:
+            return _RIS_COURT_LABEL_OVERRIDES[court_code]
         if self._court_labels is None:
             try:
                 self._court_labels = self._fetch_court_labels()
@@ -277,3 +324,114 @@ class RISCaseProvider(RISBaseClient, CaseProvider):
             page_index += 1
 
         return cases
+
+    # ------------------------------------------------------------------
+    # Targeted citation-based lookup (LookupMixin)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise_file_number(fn: str) -> str:
+        """Normalise an Aktenzeichen for exact-match comparison.
+
+        Strips whitespace and collapses internal runs so ``"VI ZR 123/22"``
+        and ``"VI  ZR 123/22"`` compare equal. Case-insensitive on the
+        senate letters (lowercase is unusual but documents do appear with
+        both forms).
+        """
+        return " ".join(fn.split()).lower()
+
+    def lookup_search(
+        self,
+        file_number: str | None = None,
+        ecli: str | None = None,
+        court_hint: str | None = None,
+        date: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search RIS for candidates matching a citation.
+
+        The RIS API has no dedicated ``fileNumber`` / ``ecli`` filter,
+        but its ``searchTerm`` full-text query reliably matches both.
+        Candidates are filtered client-side for *exact* file-number /
+        ECLI hits to keep the result list small and unambiguous —
+        without that filter ``searchTerm="VI ZR 127/22"`` returns 651
+        fuzzy matches (verified prod 2026-06-06).
+
+        ``court_hint`` is only applied when it matches a known RIS court
+        code (``courtType`` filter); arbitrary court names are ignored
+        rather than producing a confusing empty result.
+        """
+        if not (file_number or ecli):
+            raise ValueError("lookup_search requires file_number or ecli")
+
+        # Prefer the more specific identifier.
+        params: dict = {"size": min(max(int(limit) * 3, 30), MAX_PAGE_SIZE)}
+        params["searchTerm"] = ecli if ecli else file_number
+        if court_hint and court_hint in _RIS_COURT_TYPES:
+            params["courtType"] = court_hint
+
+        data = self._get_json("/v1/case-law", **params)
+        members = data.get("member", [])
+
+        norm_fn = self._normalise_file_number(file_number) if file_number else ""
+
+        candidates: list[dict] = []
+        for member in members:
+            item = member.get("item", member)
+            item_ecli = item.get("ecli", "") or ""
+            item_fns = [
+                self._normalise_file_number(f) for f in item.get("fileNumbers", [])
+            ]
+
+            if ecli and item_ecli != ecli:
+                continue
+            if file_number and norm_fn not in item_fns:
+                continue
+
+            doc_number = item.get("documentNumber", "")
+            if not doc_number:
+                continue
+
+            file_numbers = item.get("fileNumbers", [])
+            candidates.append(
+                {
+                    "doc_id": doc_number,
+                    "court_name": self._resolve_court_name(item.get("courtName", "")),
+                    "file_number": file_numbers[0] if file_numbers else "",
+                    "date": item.get("decisionDate", "") or "",
+                    "ecli": item_ecli,
+                    "type": item.get("documentType", "") or "",
+                    "snippet": (item.get("headline", "") or "")[:200],
+                }
+            )
+            if len(candidates) >= limit:
+                break
+        return candidates
+
+    def lookup_fetch(self, doc_id: str) -> dict | None:
+        """Fetch a full RIS case by ``documentNumber``.
+
+        Reuses the same HTML + detail + abstract pipeline as
+        :meth:`get_cases`, returning a case dict with the same shape.
+        ``None`` is returned when the HTML body is missing or shorter
+        than :data:`MIN_CONTENT_LENGTH` — both signal a structurally
+        broken document that the caller should treat as ``not_found``
+        rather than retrying.
+        """
+        content = self._fetch_case_html(doc_id)
+        if content is None:
+            return None
+        detail = self._fetch_case_detail(doc_id) or {}
+        # Compose a search-item-shaped dict for _map_case from the detail
+        # payload (same field names; detail is a superset of search).
+        item = {
+            "courtName": self._resolve_court_name(detail.get("courtName", "") or ""),
+            "fileNumbers": detail.get("fileNumbers", []),
+            "decisionDate": detail.get("decisionDate", ""),
+            "documentType": detail.get("documentType", ""),
+            "ecli": detail.get("ecli", ""),
+            "headline": detail.get("headline", ""),
+        }
+        abstract = self._build_abstract(detail) if detail else None
+        source_url = f"{self.base_url}/v1/case-law/{doc_id}.html"
+        return self._map_case(item, content, abstract, source_url=source_url)

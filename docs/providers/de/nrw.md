@@ -46,6 +46,13 @@ Content is extracted from `p.absatzLinks` parent's inner HTML. Tenor is
 prepended to the content. Section headlines are marked with `<h2>` tags via
 regex processing.
 
+**Tenor-only decisions**: some OVG NRW asylum rejections publish only the
+operative part with no Gründe / body section (the page has no
+`p.absatzLinks` paragraph). The provider treats those as valid cases and
+uses the Tenor as content, preserving what NRW actually publishes
+instead of dropping them with a "Could not find content" warning
+(observed prod 2026-06-02..06-04 on `1_A_367_26_A_Beschluss_*`).
+
 ## Pagination
 
 - 100 results per page

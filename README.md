@@ -135,6 +135,34 @@ The fixture file should contain Django fixture entries with `courts.court` and
 `cases.case` models. Court foreign keys are resolved to `court_name` strings
 for the OLDP cases API.
 
+### Targeted citation-based lookup
+
+When OLDP can't resolve an extracted citation, an AI agent can use the
+`lookup` subcommand group to fetch the specific decision from the right
+upstream portal. Each call is a single upstream request returning JSON
+with a three-status contract (`ok` / `not_found` / `error`).
+
+```bash
+# What lookup-capable providers exist + which courts they cover?
+oldp-ingestor lookup providers
+
+# Search RIS by ECLI
+oldp-ingestor lookup search --provider ris \
+    --ecli "ECLI:DE:BGH:2026:020626BVIAZR482.23.0"
+
+# Search a juris state portal by Aktenzeichen
+oldp-ingestor lookup search --provider juris-rlp --file-number "5 T 16/26"
+
+# Fetch the full case (no OLDP write)
+oldp-ingestor lookup fetch --provider ris --doc-id KORE615402026
+
+# Fetch + POST to OLDP (idempotent: 409 → already_exists)
+oldp-ingestor lookup ingest --provider ris --doc-id KORE615402026
+```
+
+See [docs/lookup.md](docs/lookup.md) for the full agent loop, JSON
+schema, and per-provider capability matrix.
+
 ### Output sinks
 
 By default, data is written to the OLDP REST API. Use `--sink json-file` to
@@ -189,6 +217,7 @@ See [docs/politeness.md](docs/politeness.md) for details.
 - [docs/architecture.md](docs/architecture.md) — class hierarchy, data flow, file layout
 - [docs/sinks.md](docs/sinks.md) — sink concept, CLI examples, custom sinks
 - [docs/politeness.md](docs/politeness.md) — rate limiting, retry logic, cron operation
+- [docs/lookup.md](docs/lookup.md) — citation-based lookup tools for AI agents
 
 ### Provider docs
 

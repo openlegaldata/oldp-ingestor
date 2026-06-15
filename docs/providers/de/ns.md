@@ -58,3 +58,19 @@ results matching the requested date range.
 ```bash
 oldp-ingestor -v cases --provider ns --limit 10
 ```
+
+## Known Quirks
+
+- **Cloudflare 403 on detail URLs**: `voris.wolterskluwer-online.de`
+  fronts every `/browse/document/<uuid>` with Cloudflare bot management.
+  Specific UUIDs are persistently 403-blocked from individual egress
+  IPs regardless of User-Agent or header fingerprint (verified
+  2026-06-04 with a full Chrome-fingerprint probe — still 403 while
+  `/search` returns 200). HTTP 4xx responses are now fed into the
+  failure tracker so a stuck UUID drops out of the retry budget instead
+  of producing repeat warnings every run. HTTP 5xx and network errors
+  stay transient.
+- **Pagination cap**: the portal caps pagination at `page=200` and
+  returns 404 (not an empty result page) past that boundary. The
+  provider treats a 4xx on the search endpoint as end-of-pagination
+  and logs at INFO instead of WARNING.
