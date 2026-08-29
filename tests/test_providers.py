@@ -4670,6 +4670,96 @@ def test_eu_get_cases_with_mock(monkeypatch):
     assert "Full decision text" in case["content"]
 
 
+def test_eu_looks_like_eurlex_chrome_navwall():
+    """The portal consent/login nav-wall is detected as site chrome."""
+    from oldp_ingestor.providers.de.eu import _looks_like_eurlex_chrome
+
+    nav_wall = (
+        "<html><body>Skip to main content Log in My EUR-Lex My EUR-Lex "
+        "Sign in Register Select your language</body></html>"
+    )
+    assert _looks_like_eurlex_chrome(nav_wall) is True
+
+
+def test_eu_looks_like_eurlex_chrome_oj_index():
+    """The Official-Journal index page is detected as site chrome."""
+    from oldp_ingestor.providers.de.eu import _looks_like_eurlex_chrome
+
+    oj_index = (
+        "official_journal How to verify the authenticity of the Official "
+        "Journal OJ 26/08/2026 Series L Series C"
+    )
+    assert _looks_like_eurlex_chrome(oj_index) is True
+
+
+def test_eu_looks_like_eurlex_chrome_real_judgment():
+    """A genuine judgment must not be flagged as chrome (no false positives)."""
+    from oldp_ingestor.providers.de.eu import _looks_like_eurlex_chrome
+
+    judgment = (
+        "URTEIL DES GERICHTSHOFS (Große Kammer) 16. Juli 2020 „Vorlage zur "
+        "Vorabentscheidung – Schutz natürlicher Personen bei der Verarbeitung "
+        "personenbezogener Daten“ Tenor Gründe ..."
+    )
+    assert _looks_like_eurlex_chrome(judgment) is False
+
+
+def test_eu_get_cases_rejects_site_shell(monkeypatch):
+    """A 200 returning the EUR-Lex portal shell (nav-wall / OJ index) instead
+    of the judgment must NOT be stored as a case."""
+    import json
+
+    from oldp_ingestor.providers.de.eu import EuCaseProvider
+
+    sparql_response = json.dumps(
+        {
+            "results": {
+                "bindings": [
+                    {
+                        "ecli": {"value": "ECLI:EU:T:2026:501"},
+                        "date": {"value": "2026-08-25"},
+                        "celex": {"value": "62026TO0501"},
+                    }
+                ]
+            }
+        }
+    )
+    # EUR-Lex portal nav/login wall: 200, long enough to pass the length
+    # check, but contains no judgment text.
+    nav_wall = (
+        "<html><body>Skip to main content Log in My EUR-Lex My EUR-Lex "
+        "Sign in Register Select your language " + ("x " * 3000) + "</body></html>"
+    )
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+        content = b""
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return json.loads(self.text)
+
+    def mock_request(self, method, url, **kwargs):
+        resp = FakeResp()
+        if "sparql" in url:
+            resp.text = sparql_response
+            resp.content = sparql_response.encode("utf-8")
+        else:  # both EUR-Lex legal-content and the CELLAR resource fallback
+            resp.text = nav_wall
+            resp.content = nav_wall.encode("utf-8")
+        return resp
+
+    monkeypatch.setattr(EuCaseProvider, "_request_with_retry", mock_request)
+
+    provider = EuCaseProvider(limit=1, request_delay=0)
+    cases = provider.get_cases()
+
+    assert cases == []  # site chrome rejected — nothing persisted
+
+
 def test_eu_get_cases_court_name_from_ecli(monkeypatch):
     """T-series ECLI should map to EuG, not EuGH."""
     import json
