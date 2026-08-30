@@ -31,6 +31,16 @@ CELLAR_SPARQL_URL = "https://publications.europa.eu/webapi/rdf/sparql"
 EURLEX_SPARQL_PAGE_SIZE = 100
 EURLEX_MIN_CONTENT_LEN = 10
 
+# EUR-Lex occasionally answers a 200 with its portal *shell* instead of the
+# document: the consent/login navigation wall, or an Official-Journal index
+# page. Both are ~60-80 KB of site chrome that easily clear the length check
+# but contain no judgment text — persisting them stores garbage cases
+# (observed in prod 2026-06-03..04 and 2026-08-25). These markers appear in the
+# shell but never in a genuine DE/TXT/HTML judgment rendition (verified against
+# real judgments, which contain zero occurrences).
+_EURLEX_NAVWALL_MARKER = "Skip to main content"
+_EURLEX_OJ_INDEX_MARKER = "How to verify the authenticity of the Official Journal"
+
 # CELEX sector 6 type code -> German case type name
 _CELEX_TYPE_NAMES = {
     "CJ": "Urteil",
@@ -315,6 +325,21 @@ OFFSET {offset}"""
             logger.warning("WAF challenge detected for CELEX %s at %s", celex, url)
             return None, False  # WAF clears, retry next run
 
+        # Detect EUR-Lex "site shell" responses: a 200 that returned the portal
+        # nav/login wall or an Official-Journal index page instead of the
+        # judgment. These clear the length check but hold no decision
+        # text. Treat as transient (like the WAF challenge) so the CELLAR
+        # fallback is still tried and the CELEX is re-fetched next run — rather
+        # than persisting site chrome as case content.
+        if _looks_like_eurlex_chrome(resp.text):
+            logger.warning(
+                "CELEX %s at %s returned the EUR-Lex site shell "
+                "(nav-wall/OJ index), not a judgment — will retry",
+                celex,
+                url,
+            )
+            return None, False
+
         if len(resp.text) < EURLEX_MIN_CONTENT_LEN:
             logger.warning(
                 "Empty/missing content for CELEX %s (status %d, url %s)",
@@ -561,6 +586,18 @@ def _get_case_type_from_celex(celex: str) -> str:
         return ""
 
     return _CELEX_TYPE_NAMES.get(type_code, "")
+
+
+def _looks_like_eurlex_chrome(html_text: str) -> bool:
+    """True if the response is the EUR-Lex site shell, not a judgment.
+
+    Guards against two observed failure modes where EUR-Lex answers a
+    200 with portal chrome instead of the decision: the consent/login
+    navigation wall (marked by ``Skip to main content``) and the
+    Official-Journal index page (marked by the OJ verification banner). A real
+    DE/TXT/HTML judgment rendition contains neither marker.
+    """
+    return _EURLEX_NAVWALL_MARKER in html_text or _EURLEX_OJ_INDEX_MARKER in html_text
 
 
 def _extract_html_content(html_text: str, source_url: str) -> str | None:
