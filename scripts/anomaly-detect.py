@@ -12,6 +12,8 @@ Usage:
 Environment variables:
     ANOMALY_LOW_THRESHOLD     — flag if created < baseline * threshold (default: 0.2)
     ANOMALY_HIGH_THRESHOLD    — flag if created > baseline * threshold (default: 5.0)
+    ANOMALY_CORPUS_STALL_DAYS — flag if no provider created a document in
+                                this many days (default: 3, 0 disables)
     ANOMALY_ZERO_MIN_BASELINE — min baseline avg (created+skipped) for a
                                 found-nothing run to count as ZERO (default: 1.0);
                                 below this the provider is treated as sparse
@@ -39,6 +41,17 @@ STALE_HOURS_PLAYWRIGHT = int(os.environ.get("STALE_HOURS_PLAYWRIGHT", "192"))
 # sparse — a small court or an empty rolling window — and a quiet day is not
 # flagged. Most OLDP providers are low-volume, so without this they false-alarm.
 ZERO_MIN_BASELINE = float(os.environ.get("ANOMALY_ZERO_MIN_BASELINE", "1.0"))
+
+# Days without a single document created, across *every* provider, before the
+# corpus is considered stalled. The per-provider checks cannot see this: each
+# provider is judged against its own baseline, and a provider that is normally
+# quiet is deliberately suppressed by ZERO_MIN_BASELINE. That is correct in
+# isolation and blind in aggregate -- when an outage takes out writes globally,
+# every provider looks individually plausible while nothing is being stored.
+#
+# It happened: an SSL redirect made every write hang, and the corpus did not
+# grow for 26 days while these checks reported only per-provider crashes.
+CORPUS_STALL_DAYS = int(os.environ.get("ANOMALY_CORPUS_STALL_DAYS", "3"))
 
 # Law providers monitored for staleness. The case roster is derived from the
 # ingestor package (see monitored_providers); laws are listed explicitly here
@@ -240,6 +253,49 @@ def check_single(provider, command):
     return 0
 
 
+def check_corpus_stall(history):
+    """Flag when no provider has created a document for CORPUS_STALL_DAYS.
+
+    Deliberately asks one question the per-provider checks cannot: has the
+    corpus grown at all? A global write failure is invisible per-provider --
+    every provider reports a plausible zero -- but unmistakable in aggregate.
+    """
+    if CORPUS_STALL_DAYS <= 0:
+        return None
+
+    latest_write = None
+    for entries in history.values():
+        for run in entries:
+            if run.get("created", 0) > 0:
+                ts = run.get("date") or run.get("timestamp")
+                if ts and (latest_write is None or ts > latest_write):
+                    latest_write = ts
+
+    if latest_write is None:
+        return (
+            "CORPUS_STALL",
+            "no provider has created a document in any recorded run — "
+            "check that writes are reaching the API",
+        )
+
+    try:
+        last = datetime.strptime(str(latest_write)[:10], "%Y-%m-%d").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+    days = (datetime.now(timezone.utc) - last).days
+    if days >= CORPUS_STALL_DAYS:
+        return (
+            "CORPUS_STALL",
+            f"no document created by any provider for {days} day(s) "
+            f"(last write {last.date()}, threshold {CORPUS_STALL_DAYS}) — "
+            f"the corpus is not growing; check that writes reach the API",
+        )
+    return None
+
+
 def check_all():
     if not capabilities():
         print(
@@ -251,6 +307,12 @@ def check_all():
 
     history = load_history()
     issues = []
+
+    # Corpus-level first: if nothing is being written at all, that is the
+    # headline, not a footnote under thirty per-provider lines.
+    stall = check_corpus_stall(history)
+    if stall:
+        issues.append(stall)
 
     for command, provider in monitored_providers():
         anomaly = check_anomaly(provider, command, history)
