@@ -52,7 +52,9 @@ def send_alert(subject: str, body: str) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="Send OLDP ingestor alert email")
     parser.add_argument("--subject", required=True, help="Email subject")
-    parser.add_argument("--body", default=None, help="Email body (reads stdin if omitted)")
+    parser.add_argument(
+        "--body", default=None, help="Email body (reads stdin if omitted)"
+    )
     args = parser.parse_args()
 
     if args.body:
