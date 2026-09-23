@@ -402,3 +402,63 @@ def test_client_get_retries_429(monkeypatch):
     result = client.get("/api/test/")
     assert result == {"key": "value"}
     assert call_count[0] == 2
+
+
+class TestSSLRedirectHang:
+    """Plain-HTTP writes must not be redirected into a TLS handshake that hangs.
+
+    OLDP enables ``SECURE_SSL_REDIRECT`` in production, so a plain-HTTP request
+    is answered with ``301 -> https://<same host and port>``. The ingestor talks
+    to gunicorn directly over the container network, where that port speaks
+    plain HTTP only, so following the redirect opens a TLS handshake that never
+    completes and the request hangs until the read timeout.
+
+    Every write failed that way for 26 days: the corpus stopped growing on the
+    day the redirect shipped, while the jobs kept reporting ``created=0`` and
+    four providers crashed nightly on ``ReadTimeout``.
+    """
+
+    def test_forwarded_proto_set_for_http_urls(self):
+        client = OLDPClient(api_url="http://oldp-prod-app:8000")
+        assert client.session.headers["X-Forwarded-Proto"] == "https"
+
+    def test_forwarded_proto_not_set_for_https_urls(self):
+        """An https:// base URL is already what the server expects."""
+        client = OLDPClient(api_url="https://de.openlegaldata.io")
+        assert "X-Forwarded-Proto" not in client.session.headers
+
+    def test_post_does_not_follow_redirects(self, monkeypatch):
+        """A write must not chase a 3xx; it did not reach the endpoint."""
+        seen = {}
+
+        def fake_request(method, url, **kwargs):
+            seen.update(kwargs)
+            resp = requests.Response()
+            resp.status_code = 200
+            resp._content = b"{}"
+            resp.url = url
+            return resp
+
+        client = OLDPClient(api_url="http://localhost:8000")
+        monkeypatch.setattr(client.session, "request", fake_request)
+        client.post("/api/cases/", {"x": 1})
+        assert seen["allow_redirects"] is False
+
+    def test_post_raises_on_redirect_instead_of_hanging(self, monkeypatch):
+        """The failure mode that cost 26 days must be loud, not silent."""
+
+        def fake_request(method, url, **kwargs):
+            resp = requests.Response()
+            resp.status_code = 301
+            resp.headers["Location"] = "https://oldp-prod-app:8000/api/cases/"
+            resp._content = b""
+            resp.url = url
+            return resp
+
+        client = OLDPClient(api_url="http://oldp-prod-app:8000")
+        monkeypatch.setattr(client.session, "request", fake_request)
+        with pytest.raises(requests.HTTPError) as exc:
+            client.post("/api/cases/", {"x": 1})
+        message = str(exc.value)
+        assert "was not delivered" in message
+        assert "OLDP_API_URL" in message
