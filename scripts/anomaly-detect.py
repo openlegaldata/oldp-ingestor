@@ -264,12 +264,15 @@ def check_corpus_stall(history):
         return None
 
     latest_write = None
-    for entries in history.values():
-        for run in entries:
-            if run.get("created", 0) > 0:
-                ts = run.get("date") or run.get("timestamp")
-                if ts and (latest_write is None or ts > latest_write):
-                    latest_write = ts
+    for run in history:
+        if run.get("created", 0) > 0:
+            finished_at = run.get("finished_at", "")
+            try:
+                ts = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if latest_write is None or ts > latest_write:
+                latest_write = ts
 
     if latest_write is None:
         return (
@@ -278,19 +281,12 @@ def check_corpus_stall(history):
             "check that writes are reaching the API",
         )
 
-    try:
-        last = datetime.strptime(str(latest_write)[:10], "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
-
-    days = (datetime.now(timezone.utc) - last).days
+    days = (datetime.now(timezone.utc) - latest_write).days
     if days >= CORPUS_STALL_DAYS:
         return (
             "CORPUS_STALL",
             f"no document created by any provider for {days} day(s) "
-            f"(last write {last.date()}, threshold {CORPUS_STALL_DAYS}) — "
+            f"(last write {latest_write.date()}, threshold {CORPUS_STALL_DAYS}) — "
             f"the corpus is not growing; check that writes reach the API",
         )
     return None

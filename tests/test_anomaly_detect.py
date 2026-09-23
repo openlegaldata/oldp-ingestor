@@ -122,29 +122,47 @@ def test_zero_min_baseline_is_tunable(mod, monkeypatch):
 # per-provider crashes and the daily mail said nothing about the corpus.
 
 
-def _dated(days_ago, created, mod):
+def _dated(days_ago, created, provider="p"):
+    """A run entry in the shape ``load_history()`` actually returns.
+
+    Flat list of dicts keyed by ``finished_at`` -- not a dict-of-lists, and not
+    a ``date`` field. The first version of these tests invented both, so they
+    passed while the check crashed on the first real run with
+    ``AttributeError: 'list' object has no attribute 'values'``.
+    """
     from datetime import datetime, timedelta, timezone
 
     day = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return {
-        "provider": "p",
+        "provider": provider,
         "command": "cases",
         "created": created,
         "skipped": 0,
         "errors": 0,
         "status": "ok",
         "exit_code": 0,
-        "date": day.strftime("%Y-%m-%d"),
+        "finished_at": day.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 
+def test_history_fixture_matches_load_history_shape(mod, tmp_path, monkeypatch):
+    """Pin the fixture against the real loader, so it cannot drift again."""
+    hist = tmp_path / "history.jsonl"
+    import json
+
+    hist.write_text(json.dumps(_dated(1, 5)) + "\n")
+    monkeypatch.setattr(mod, "HISTORY_FILE", str(hist))
+    loaded = mod.load_history()
+    assert isinstance(loaded, list)
+    assert loaded[0].keys() == _dated(1, 5).keys()
+
+
 def test_recent_write_is_not_a_stall(mod):
-    history = {"cases/p": [_dated(5, 3, mod), _dated(0, 2, mod)]}
-    assert mod.check_corpus_stall(history) is None
+    assert mod.check_corpus_stall([_dated(5, 3), _dated(0, 2)]) is None
 
 
 def test_no_write_for_longer_than_threshold_is_flagged(mod):
-    history = {"cases/p": [_dated(30, 4, mod)] + [_dated(d, 0, mod) for d in range(9)]}
+    history = [_dated(30, 4)] + [_dated(d, 0) for d in range(9)]
     result = mod.check_corpus_stall(history)
     assert result is not None
     assert result[0] == "CORPUS_STALL"
@@ -153,12 +171,10 @@ def test_no_write_for_longer_than_threshold_is_flagged(mod):
 
 def test_the_26_day_outage_would_have_been_caught(mod):
     """Replay the real shape: every provider succeeds, nothing is written."""
-    # Last successful write 26 days ago, then every provider "succeeding"
-    # with created=0 every day since -- exactly what production looked like.
-    history = {
-        f"cases/{name}": [_dated(26, 5, mod)] + [_dated(d, 0, mod) for d in range(26)]
-        for name in ("nrw", "by", "hb", "eu", "ns")
-    }
+    history = []
+    for name in ("nrw", "by", "hb", "eu", "ns"):
+        history.append(_dated(26, 5, name))
+        history += [_dated(d, 0, name) for d in range(26)]
     result = mod.check_corpus_stall(history)
     assert result is not None
     assert result[0] == "CORPUS_STALL"
@@ -167,35 +183,33 @@ def test_the_26_day_outage_would_have_been_caught(mod):
 
 def test_quiet_providers_alone_do_not_trip_it(mod):
     """A sparse provider writing nothing is fine while others still write."""
-    history = {
-        "cases/sparse": [_dated(d, 0, mod) for d in range(20)],
-        "cases/busy": [_dated(0, 7, mod)],
-    }
+    history = [_dated(d, 0, "sparse") for d in range(20)] + [_dated(0, 7, "busy")]
     assert mod.check_corpus_stall(history) is None
 
 
 def test_no_recorded_write_at_all_is_flagged(mod):
-    history = {"cases/p": [_dated(d, 0, mod) for d in range(5)]}
-    result = mod.check_corpus_stall(history)
+    result = mod.check_corpus_stall([_dated(d, 0) for d in range(5)])
+    assert result is not None
+    assert result[0] == "CORPUS_STALL"
+
+
+def test_unparseable_timestamp_is_skipped_not_fatal(mod):
+    bad = _dated(0, 5)
+    bad["finished_at"] = "not-a-timestamp"
+    result = mod.check_corpus_stall([bad])
     assert result is not None
     assert result[0] == "CORPUS_STALL"
 
 
 def test_check_can_be_disabled(mod, monkeypatch):
     monkeypatch.setattr(mod, "CORPUS_STALL_DAYS", 0)
-    history = {"cases/p": [_dated(99, 0, mod)]}
-    assert mod.check_corpus_stall(history) is None
+    assert mod.check_corpus_stall([_dated(99, 0)]) is None
 
 
 def test_check_all_surfaces_the_stall(mod, monkeypatch, capsys):
-    """The check must be wired into check_all(), not merely exist.
-
-    Without this, deleting the call from check_all() leaves every test above
-    passing while production loses the alarm entirely.
-    """
-    history = {"cases/p": [_dated(40, 3, mod)]}
+    """The check must be wired into check_all(), not merely exist."""
     monkeypatch.setattr(mod, "capabilities", lambda: {"cases": ["p"]})
-    monkeypatch.setattr(mod, "load_history", lambda: history)
+    monkeypatch.setattr(mod, "load_history", lambda: [_dated(40, 3)])
     monkeypatch.setattr(mod, "monitored_providers", lambda: [])
 
     issues = mod.check_all()
