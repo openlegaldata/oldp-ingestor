@@ -43,6 +43,21 @@ class OLDPClient:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = get_user_agent()
 
+        if self.api_url.startswith("http://"):
+            # OLDP enables SECURE_SSL_REDIRECT in production, so a plain-HTTP
+            # request is answered with 301 -> https://<same host and port>.
+            # We talk to gunicorn directly over the container network, where
+            # that port speaks plain HTTP only, so following the redirect opens
+            # a TLS handshake that never completes and the request hangs until
+            # the read timeout. Every write failed that way for 26 days.
+            #
+            # nginx solves this for external traffic by setting
+            # X-Forwarded-Proto, which OLDP trusts via SECURE_PROXY_SSL_HEADER.
+            # Internal callers bypass nginx, so we set it ourselves: the
+            # container network is the trusted transport here, exactly as the
+            # proxy hop is for external requests.
+            self.session.headers["X-Forwarded-Proto"] = "https"
+
         if api_token:
             self.session.headers["Authorization"] = f"Token {api_token}"
 
@@ -102,7 +117,18 @@ class OLDPClient:
         logger.debug("POST %s", url)
         if self.write_delay > 0:
             time.sleep(self.write_delay)
+        # Never chase a redirect on a write. A 3xx here means the request did
+        # not reach the endpoint, and silently following it is how the SSL
+        # redirect above turned into a hang instead of an error. Failing loudly
+        # keeps a misconfigured base URL from looking like a slow network.
+        kwargs.setdefault("allow_redirects", False)
         resp = self._request_with_retry("POST", url, json=data, **kwargs)
+        if 300 <= resp.status_code < 400:
+            raise requests.HTTPError(
+                f"POST {url} was redirected to {resp.headers.get('Location')!r} "
+                f"({resp.status_code}). The write was not delivered. Check that "
+                f"OLDP_API_URL matches the scheme the server expects."
+            )
         return resp.json()
 
     @classmethod
