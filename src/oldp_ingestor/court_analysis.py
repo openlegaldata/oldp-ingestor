@@ -92,6 +92,33 @@ def extract_type_code(name: str) -> str | None:
     return None
 
 
+# ECLI court segment: ECLI:DE:<court>:<year>:<ordinal>. The third field is
+# the issuing court's abbreviation (e.g. "BGH", "BVerfG", "VFGHNRW"). It is a
+# reliable court signal even when a case's free-text court name is missing or
+# unmatched — most OLDP "unknown"-court cases are federal decisions whose ECLI
+# still names the court. German ECLIs use the country code "DE".
+_ECLI_COURT_RE = re.compile(r"^ECLI:DE:(?P<court>[A-Za-z0-9]+):", re.IGNORECASE)
+
+
+def court_code_from_ecli(ecli: str | None) -> str | None:
+    """Return the court abbreviation embedded in a German ECLI, or ``None``.
+
+    ``ECLI:DE:BGH:2022:...`` -> ``"BGH"``. The casing of the source segment is
+    preserved (ECLIs are conventionally upper-case, e.g. ``BVERFG``); match it
+    against OLDP court codes case-insensitively.
+
+    Args:
+        ecli: An ECLI string (or ``None``).
+
+    Returns:
+        The court segment, or ``None`` if ``ecli`` is missing / not a DE ECLI.
+    """
+    if not ecli:
+        return None
+    m = _ECLI_COURT_RE.match(ecli.strip())
+    return m.group("court") if m else None
+
+
 def extract_location(name: str, type_code: str | None) -> str:
     """Strip the court-type portion and filler words, returning the location."""
     location = name

@@ -5,12 +5,39 @@ import sys
 
 from oldp_ingestor.court_analysis import (
     analyze_missing_courts,
+    court_code_from_ecli,
     extract_location,
     extract_type_code,
     format_table,
     format_tsv,
     parse_missing_courts,
 )
+
+
+class TestCourtCodeFromEcli:
+    def test_federal_court(self):
+        assert court_code_from_ecli("ECLI:DE:BGH:2022:120522UIZR203.20.0") == "BGH"
+
+    def test_preserves_source_casing(self):
+        # ECLIs are conventionally upper-case; we don't normalise.
+        assert court_code_from_ecli("ECLI:DE:BVerfG:2022:lk20220504.x") == "BVerfG"
+
+    def test_state_constitutional_court(self):
+        assert (
+            court_code_from_ecli("ECLI:DE:VFGHNRW:2022:0621.VERFGH9.22VB3.00")
+            == "VFGHNRW"
+        )
+
+    def test_whitespace_tolerant(self):
+        assert court_code_from_ecli("  ECLI:DE:BAG:2022:030522.B.x  ") == "BAG"
+
+    def test_non_de_ecli_returns_none(self):
+        assert court_code_from_ecli("ECLI:EU:C:2019:1145") is None
+
+    def test_missing_or_malformed(self):
+        assert court_code_from_ecli(None) is None
+        assert court_code_from_ecli("") is None
+        assert court_code_from_ecli("not-an-ecli") is None
 
 
 # ---------------------------------------------------------------------------
