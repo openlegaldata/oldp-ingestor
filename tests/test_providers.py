@@ -6179,6 +6179,9 @@ def test_sn_get_cases_with_mock(monkeypatch, tmp_path):
         def expect_download(self, timeout=30000):
             return FakeDownloadCtx()
 
+        def evaluate(self, script, arg=None):
+            return None  # no next page
+
         def close(self):
             pass
 
@@ -6205,6 +6208,104 @@ def test_sn_get_cases_with_mock(monkeypatch, tmp_path):
     assert cases[0]["date"] == "2009-10-30"
     assert cases[0]["abstract"] == "Test abstract"
     assert "ESAMOSplus content" in cases[0]["content"]
+
+
+def test_sn_get_cases_pages_through_the_results(monkeypatch, tmp_path):
+    """The table is paged with the button of the next page number."""
+    import pymupdf
+
+    from oldp_ingestor.providers.de.sn import SnCaseProvider
+
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "Test ESAMOSplus content.")
+    pdf_path = tmp_path / "test.pdf"
+    doc.save(str(pdf_path))
+    doc.close()
+
+    def table(az):
+        return f"""<html><body><table id="DV13_Table"><tr>
+        <td><input type="submit" id="DV13_Table_ctl03_DV13_Table_RowHeader0_C1" value=" "/></td>
+        <td><input type="submit" id="DV13_Table_ctl03_DV13_Table_Col0_C1" value="30.10.2009"/></td>
+        <td><input type="submit" id="DV13_Table_ctl03_DV13_Table_Col1_C1" value="{az}"/></td>
+        <td><input type="submit" id="DV13_Table_ctl03_DV13_Table_Col2_C1"
+            value="Oberlandesgericht Dresden"/></td>
+        <td><input type="submit" id="DV13_Table_ctl03_DV13_Table_Col3_C1"
+            name="DV13_Table$ctl03$DV13_Table_Col3_C1" value="x"/></td>
+        </tr></table></body></html>"""
+
+    class FakeDownloadCtx:
+        def __init__(self):
+            self.value = type(
+                "D",
+                (),
+                {"url": "https://example.org/x.pdf", "path": lambda s: str(pdf_path)},
+            )()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class Nav:
+        def __init__(self, page):
+            self.page = page
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.page.current += 1
+
+    class FakePage:
+        current = 0
+        tables = [table("3 W 1/09"), table("3 W 2/09")]
+
+        def goto(self, url, timeout=30000):
+            pass
+
+        def wait_for_selector(self, sel, timeout=15000):
+            pass
+
+        def wait_for_load_state(self, state, timeout=30000):
+            pass
+
+        def click(self, sel):
+            pass
+
+        def fill(self, sel, val):
+            pass
+
+        def select_option(self, sel, val):
+            pass
+
+        def query_selector(self, sel):
+            return True if "DV13_Table" in sel else None
+
+        def content(self):
+            return self.tables[self.current]
+
+        def expect_download(self, timeout=30000):
+            return FakeDownloadCtx()
+
+        def expect_navigation(self, timeout=30000):
+            return Nav(self)
+
+        def evaluate(self, script, arg=None):
+            if arg is None:  # the name of the next page's button, if any
+                return "ctl35" if self.current + 1 < len(self.tables) else None
+            return None
+
+        def close(self):
+            pass
+
+    provider = SnCaseProvider(request_delay=0)
+    provider._context = type("C", (), {"new_page": lambda self: FakePage()})()
+    monkeypatch.setattr(SnCaseProvider, "_ensure_browser", lambda self: None)
+    monkeypatch.setattr(SnCaseProvider, "close", lambda self: None)
+
+    cases = provider.get_cases()
+    assert [c["file_number"] for c in cases] == ["3 W 1/09", "3 W 2/09"]
 
 
 def test_sn_get_cases_download_failure(monkeypatch):

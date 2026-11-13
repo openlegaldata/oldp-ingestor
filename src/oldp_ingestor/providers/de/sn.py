@@ -194,6 +194,34 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
 
         return rows
 
+    # The pager has one submit button per page: the current one carries the
+    # class Pager_Selection, buttons outside the visible window carry
+    # Pager_Hidden. There is no "Vorwärts" button (checked November 2026).
+    _NEXT_PAGE_JS = """() => {
+        const buttons = [...document.querySelectorAll(
+            'input[type="submit"][class*="pagerDivCtls"]')];
+        const current = buttons.find((b) => b.className.includes("Pager_Selection"));
+        if (!current) return null;
+        const next = buttons.find(
+            (b) => b.value.trim() === String(Number(current.value.trim()) + 1));
+        return next ? next.name : null;
+    }"""
+
+    def _next_results_page(self, page) -> bool:
+        """Go to the next page of the results table; False on the last page.
+
+        The button of the next page may be hidden outside the pager's
+        window, so it is clicked by script, and the postback reloads the
+        page.
+        """
+        name = page.evaluate(self._NEXT_PAGE_JS)
+        if not name:
+            return False
+        with page.expect_navigation(timeout=60000):
+            page.evaluate("(n) => document.getElementsByName(n)[0].click()", name)
+        page.wait_for_load_state("networkidle", timeout=30000)
+        return True
+
     def get_cases(self) -> list[dict]:
         """Navigate ESAMOSplus, search, and extract cases."""
         import pymupdf
@@ -287,15 +315,8 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
                     if self.limit and len(cases) >= self.limit:
                         return cases
 
-                # Try next page
-                next_btn = page.query_selector(
-                    'input[type="submit"][value="Vorwärts"]:not([disabled])'
-                )
-                if not next_btn:
+                if not self._next_results_page(page):
                     break
-
-                next_btn.click()
-                page.wait_for_load_state("networkidle", timeout=30000)
 
         except Exception as exc:
             logger.error("ESAMOSplus scraping failed: %s", exc)
