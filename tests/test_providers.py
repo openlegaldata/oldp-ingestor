@@ -7029,6 +7029,46 @@ def test_nrw_search_page_no_dates(monkeypatch):
     assert captured_data.get("bis") == ""
 
 
+def test_nrw_get_cases_pages_past_1600(monkeypatch):
+    """get_cases keeps paging until the listing is empty, beyond page 1,600."""
+    from oldp_ingestor.providers.de.nrw import NrwCaseProvider
+
+    last_page = 1650
+    seen_pages = []
+
+    def fake_search_page(self, page):
+        seen_pages.append(page)
+        return (
+            [f"https://nrwe.justiz.nrw.de/test/case{page}.html"]
+            if page <= last_page
+            else []
+        )
+
+    case_html = """<html><body>
+        <div class="feldbezeichnung">Gericht:</div>
+        <div class="feldinhalt">Landgericht Bonn</div>
+        <div class="feldbezeichnung">Datum:</div>
+        <div class="feldinhalt">01.06.2024</div>
+        <div class="feldbezeichnung">Aktenzeichen:</div>
+        <div class="feldinhalt">1 O 1/24</div>
+        <div class="maindiv">
+            <span class="absatzRechts">1</span>
+            <p class="absatzLinks">Case decision text.</p>
+        </div>
+    </body></html>"""
+
+    class FakeResp:
+        text = case_html
+
+    monkeypatch.setattr(NrwCaseProvider, "_search_page", fake_search_page)
+    monkeypatch.setattr(NrwCaseProvider, "_get", lambda self, url, **kw: FakeResp())
+
+    provider = NrwCaseProvider(request_delay=0)
+    cases = provider.get_cases()
+    assert len(cases) == last_page
+    assert seen_pages[-2:] == [last_page + 1, last_page + 2]
+
+
 def test_nrw_get_cases_with_date_filtering(monkeypatch):
     """NRW get_cases applies _is_within_date_range to exclude out-of-range cases."""
     from oldp_ingestor.providers.de.nrw import NrwCaseProvider
