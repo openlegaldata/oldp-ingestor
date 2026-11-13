@@ -3839,6 +3839,67 @@ def test_case_provider_date_range_missing_date():
 # --- NS date filtering integration ---
 
 
+def test_ns_searches_year_by_year(monkeypatch):
+    """The unfiltered list ends after 200 pages; each year is searched alone.
+
+    A decision that only a 2001 search lists is reached, and one that two
+    windows list is yielded once.
+    """
+    from oldp_ingestor.providers.de.ns import NsCaseProvider
+
+    case_html = """<html><body>
+        <article class="wkde-case wkde-document">
+        <section class="wkde-bibliography"><dl>
+            <dt>Gericht</dt><dd>OLG Celle</dd>
+            <dt>Datum</dt><dd>01.06.2001</dd>
+            <dt>Aktenzeichen</dt><dd>1 U 1/01</dd>
+        </dl></section>
+        <section class="wkde-document-body"><p>Text.</p></section>
+        </article>
+    </body></html>"""
+    old = "/browse/document/00000000-0000-0000-0000-000000002001"
+    both = "/browse/document/00000000-0000-0000-0000-00000000b0b0"
+    searches = []
+
+    class FakeResp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            pass
+
+    def mock_request(self, method, url, **kwargs):
+        resp = FakeResp()
+        params = kwargs.get("params") or {}
+        if "/search" in url:
+            searches.append(
+                (params.get("date"), params.get("end_date_range"), params["page"])
+            )
+            year = (params.get("date") or "")[:4]
+            links = (
+                {"2002": [both], "2001": [both, old]}.get(year, [])
+                if params["page"] == "0"
+                else []
+            )
+            resp.text = "".join(f'<a href="{x}">x</a>' for x in links)
+        else:
+            resp.text = case_html
+        return resp
+
+    monkeypatch.setattr(NsCaseProvider, "_request_with_retry", mock_request)
+
+    provider = NsCaseProvider(
+        date_from="2000-01-01", date_to="2002-12-31", request_delay=0
+    )
+    cases = provider.get_cases()
+    assert [c["source_url"][-4:] for c in cases] == ["b0b0", "2001"]
+    assert {s[:2] for s in searches} == {
+        ("2002-01-01", "2002-12-31"),
+        ("2001-01-01", "2001-12-31"),
+        ("2000-01-01", "2000-12-31"),
+    }
+
+
 def test_ns_date_filter_from(monkeypatch):
     """NS provider excludes cases before date_from."""
     from oldp_ingestor.providers.de.ns import NsCaseProvider
