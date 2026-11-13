@@ -2156,6 +2156,39 @@ def test_nrw_search_page(monkeypatch):
     assert "/nrwe/olgs/hamm/j2024/test.html" in links[0]
 
 
+def test_nrw_search_page_skips_links_that_are_not_decisions(monkeypatch):
+    """A result's links to cited norms elsewhere are not decision pages."""
+    from oldp_ingestor.providers.de.nrw import NrwCaseProvider
+
+    result_html = """<html><body>
+        <div class="einErgebnis">
+            <a href="https://nrwe.justiz.nrw.de/ovgs/ovg_nrw/j2026/1_A_470_25_Beschluss_20261112.html">1 A 470/25</a>
+            <a href="https://www.juris.testa-de.net/r3/document/BJNR000170960BJNE016807811/format/xsl/part/S">§ 1</a>
+            <a href="https://www.gesetze-im-internet.de/zpo/__118.html">§ 118 ZPO</a>
+        </div>
+        <div class="einErgebnis">
+            <a href="/nrwe/olgs/hamm/j2024/test.html">relative</a>
+        </div>
+    </body></html>"""
+
+    class FakeResp:
+        status_code = 200
+        text = result_html
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        NrwCaseProvider, "_request_with_retry", lambda self, *a, **kw: FakeResp()
+    )
+
+    links = NrwCaseProvider(request_delay=0)._search_page(1)
+    assert links == [
+        "https://nrwe.justiz.nrw.de/ovgs/ovg_nrw/j2026/1_A_470_25_Beschluss_20261112.html",
+        "/nrwe/olgs/hamm/j2024/test.html",
+    ]
+
+
 # ===================================================================
 # --- JurisCaseProvider ---
 # ===================================================================

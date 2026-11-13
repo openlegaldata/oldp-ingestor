@@ -6,6 +6,7 @@ Data format: HTML pages, POST-based search with session cookies.
 
 import logging
 import re
+from urllib.parse import urlparse
 
 import lxml.html
 import requests
@@ -27,6 +28,20 @@ NRW_MAX_PAGE = 1600
 # courts API; the portal indexes every NRW court (AG/LG/OLG/VG/OVG/...)
 # so a state-level selector matches what's actually queryable.
 _NRW_STATE_ID = 12
+
+
+def _is_decision_link(href: str) -> bool:
+    """Whether a link of a search result points to a decision page of NRWE.
+
+    A result can also link norms it cites; in November 2026 such links pointed
+    to ``www.juris.testa-de.net``, a host of the judiciary's internal network
+    that is not reachable from outside. Decision pages are ``.html`` files on
+    a ``justiz.nrw.de`` host (or relative to it).
+    """
+    parsed = urlparse(href)
+    host = parsed.hostname or ""
+    on_nrw = not host or host == "justiz.nrw.de" or host.endswith(".justiz.nrw.de")
+    return on_nrw and parsed.path.endswith(".html")
 
 
 class NrwCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
@@ -134,7 +149,7 @@ class NrwCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
         links = []
         for link in CSSSelector(".einErgebnis a")(tree):
             href = link.attrib.get("href", "")
-            if href:
+            if href and _is_decision_link(href):
                 links.append(href)
 
         return links
