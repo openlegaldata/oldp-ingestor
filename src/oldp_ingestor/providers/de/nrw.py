@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 NRW_BASE_URL = "https://nrwesuche.justiz.nrw.de"
 NRW_SEARCH_URL = f"{NRW_BASE_URL}/index.php"
 NRW_PER_PAGE = 100
-NRW_MAX_PAGE = 1600
 
 # OLDP state id for Nordrhein-Westfalen. Used by the lookup capability
 # to resolve the provider's court coverage at runtime against the OLDP
@@ -230,7 +229,10 @@ class NrwCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
         page = 1
         empty_pages = 0
 
-        while page <= NRW_MAX_PAGE:
+        # No fixed page cap: NRWE listed 214,042 decisions (2,141 pages of 100)
+        # in November 2026, more than a cap of 1,600 pages reaches. The loop
+        # ends after two empty pages.
+        while True:
             try:
                 links = self._search_page(page)
             except requests.RequestException as exc:
