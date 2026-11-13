@@ -23,6 +23,8 @@ Provider                          # common base (providers/base.py)
     ├── NrwCaseProvider            # NRW courts via NRWE database (providers/de/)
     ├── NsCaseProvider             # Lower Saxony via NI-VORIS (providers/de/)
     ├── EuCaseProvider             # EU courts via EUR-Lex (providers/de/)
+    ├── JurisApiCaseProvider       # the same juris portals over their JSON API, no browser
+    │                              #   (10 variants Bw/He/…ApiCaseProvider, providers/de/juris_api.py)
     └── JurisCaseProvider          # juris-hosted state portals (10 variants, providers/de/):
         ├── BbBeCaseProvider       #   Berlin-Brandenburg
         ├── BwCaseProvider         #   Baden-Württemberg
@@ -49,7 +51,8 @@ HttpBaseClient                    # shared HTTP: session, retry, pacing
 │   ├── ByCaseProvider            # XML-based Bavarian courts
 │   ├── NrwCaseProvider           # HTML scraping for NRW
 │   ├── NsCaseProvider            # HTML scraping for Lower Saxony
-│   └── EuCaseProvider            # SOAP/XML for EUR-Lex
+│   ├── EuCaseProvider            # SOAP/XML for EUR-Lex
+│   └── JurisApiCaseProvider      # JSON API of the juris state portals (10 variants)
 └── PlaywrightBaseClient          # browser-based scraping (requires Playwright)
     └── JurisCaseProvider         # juris-hosted state law portals (10 variants)
 ```
@@ -169,7 +172,8 @@ src/oldp_ingestor/
 │   │   ├── sn_ovg.py         # SnOvgCaseProvider (Sachsen OVG)
 │   │   ├── sn.py             # SnCaseProvider (Sachsen ESAMOSplus)
 │   │   ├── sn_verfgh.py      # SnVerfghCaseProvider (Sachsen VerfGH)
-│   │   └── juris.py          # JurisCaseProvider + 10 state variants
+│   │   ├── juris.py          # JurisCaseProvider + 10 state variants
+│   │   └── juris_api.py      # JurisApiCaseProvider + 10 state variants (JSON API)
 │   └── dummy/                # Dummy providers (test/dev)
 │       ├── __init__.py
 │       ├── dummy_laws.py     # DummyLawProvider (laws from fixture)

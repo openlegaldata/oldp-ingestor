@@ -357,6 +357,18 @@ def _make_law_provider(args) -> LawProvider:
             proxy=args.proxy,
         )
 
+    if args.provider in _JURIS_API_PROVIDERS:
+        import oldp_ingestor.providers.de.juris_api as juris_api_mod
+
+        cls = getattr(juris_api_mod, _JURIS_API_PROVIDERS[args.provider])
+        return cls(
+            date_from=args.date_from,
+            date_to=args.date_to,
+            limit=args.limit,
+            request_delay=args.request_delay,
+            proxy=args.proxy,
+        )
+
     logger.error("Unknown provider '%s'", args.provider)
     sys.exit(1)
 
@@ -590,6 +602,7 @@ def cmd_replay(args):
 # exactly one place (registry.py), shared with the `providers` capability
 # command and the cron scripts.
 _JURIS_PROVIDERS = registry.juris_case_classes()
+_JURIS_API_PROVIDERS = registry.juris_api_case_classes()
 
 
 def _make_case_provider(args) -> CaseProvider:

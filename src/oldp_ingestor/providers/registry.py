@@ -52,6 +52,22 @@ CASE_PROVIDERS: dict[str, tuple[str, str]] = {
     "juris-sl": ("oldp_ingestor.providers.de.juris", "SlCaseProvider"),
     "juris-he": ("oldp_ingestor.providers.de.juris", "HeCaseProvider"),
     "juris-th": ("oldp_ingestor.providers.de.juris", "ThCaseProvider"),
+    # the same portals over their JSON API, without a browser (juris_api.py)
+    **{
+        f"juris-api-{state}": ("oldp_ingestor.providers.de.juris_api", cls)
+        for state, cls in (
+            ("bb", "BbBeApiCaseProvider"),
+            ("hh", "HhApiCaseProvider"),
+            ("mv", "MvApiCaseProvider"),
+            ("rlp", "RlpApiCaseProvider"),
+            ("sa", "SaApiCaseProvider"),
+            ("sh", "ShApiCaseProvider"),
+            ("bw", "BwApiCaseProvider"),
+            ("sl", "SlApiCaseProvider"),
+            ("he", "HeApiCaseProvider"),
+            ("th", "ThApiCaseProvider"),
+        )
+    },
 }
 
 LAW_PROVIDERS: dict[str, tuple[str, str]] = {
@@ -81,7 +97,16 @@ def juris_case_classes() -> dict[str, str]:
     return {
         name: cls
         for name, (_mod, cls) in CASE_PROVIDERS.items()
-        if name.startswith("juris-")
+        if name.startswith("juris-") and not name.startswith("juris-api-")
+    }
+
+
+def juris_api_case_classes() -> dict[str, str]:
+    """``{provider_id: class_name}`` for the juris portals over their API."""
+    return {
+        name: cls
+        for name, (_mod, cls) in CASE_PROVIDERS.items()
+        if name.startswith("juris-api-")
     }
 
 
