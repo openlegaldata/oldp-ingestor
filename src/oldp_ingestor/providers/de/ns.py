@@ -20,6 +20,10 @@ NS_BASE_URL = "https://voris.wolterskluwer-online.de"
 NS_SEARCH_PATH = "/search"
 NS_PER_PAGE = 12  # fixed by the portal
 NS_MAX_PAGE = 5000
+# The result list ends after 200 pages of 12 (page=200 answers 404): 2,400 of
+# the ~46,800 decisions. iter_cases therefore searches one year at a time
+# (date + end_date_range); the busiest year had 2,221 decisions (Nov. 2026).
+NS_FIRST_YEAR = 1945
 
 # OLDP state id for Niedersachsen (matches the portal's jurisdiction).
 _NS_STATE_ID = 11
@@ -76,14 +80,33 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
         self.date_from = date_from or ""
         self.date_to = date_to or ""
         self.limit = limit
+        # (first day, last day) of the window _search_page searches, or None
+        self._window: tuple[str, str] | None = None
+
+    def _date_windows(self) -> list[tuple[str, str]]:
+        """One window per year, newest first, clipped to date_from/date_to."""
+        from datetime import date
+
+        last = int(self.date_to[:4]) if self.date_to else date.today().year
+        first = int(self.date_from[:4]) if self.date_from else NS_FIRST_YEAR
+        windows = []
+        for year in range(last, first - 1, -1):
+            start, end = f"{year}-01-01", f"{year}-12-31"
+            if self.date_from and self.date_from > start:
+                start = self.date_from
+            if self.date_to and self.date_to < end:
+                end = self.date_to
+            windows.append((start, end))
+        return windows
 
     def _search_page(self, page: int) -> list[str]:
         """GET search page and extract document UUIDs from results.
 
         Returns list of document paths like '/browse/document/<uuid>'.
-        Results are sorted date_desc; date filtering happens client-side
-        since VORIS ignores the date= param and returns 404 when
-        combined with end_date_range.
+        Results are sorted date_desc. Within a window (``self._window``) the
+        search filters by decision date: ``date`` and ``end_date_range``
+        (YYYY-MM-DD) work together; ``date`` alone is ignored, and a window
+        without results answers 404.
         """
         params = {
             "query": "*",
@@ -91,6 +114,8 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
             "sort_order": "date_desc",
             "page": str(page),
         }
+        if self._window:
+            params["date"], params["end_date_range"] = self._window
 
         resp = self._get(NS_SEARCH_PATH, params=params)
 
@@ -173,10 +198,26 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
         return case
 
     def iter_cases(self):
-        """Search VORIS and yield cases one at a time (streaming)."""
+        """Search VORIS one year at a time and yield cases (streaming).
+
+        The unfiltered list ends after 200 pages (2,400 decisions), so each
+        year is searched on its own; a decision on a window's border is
+        yielded once.
+        """
+        seen: set[str] = set()
+        yielded = 0
+        for window in self._date_windows():
+            self._window = window
+            for case in self._iter_window(seen):
+                yield case
+                yielded += 1
+                if self.limit and yielded >= self.limit:
+                    return
+
+    def _iter_window(self, seen: set[str]):
+        """Yield the cases of the current window, skipping paths in ``seen``."""
         page = 0  # 0-indexed pagination
         empty_pages = 0
-        yielded = 0
 
         while page <= NS_MAX_PAGE:
             try:
@@ -208,8 +249,9 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
 
             for doc_path in links:
                 case_url = f"{NS_BASE_URL}{doc_path}"
-                if self.failure_tracker.should_skip(doc_path):
+                if doc_path in seen or self.failure_tracker.should_skip(doc_path):
                     continue
+                seen.add(doc_path)
 
                 try:
                     html_str = self._get(doc_path).text
@@ -252,10 +294,6 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
 
                 self.failure_tracker.record_success(doc_path)
                 yield case
-                yielded += 1
-
-                if self.limit and yielded >= self.limit:
-                    return
 
             page += 1
 
