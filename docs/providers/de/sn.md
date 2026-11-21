@@ -101,6 +101,11 @@ WebForms search page. When `--date-from` / `--date-to` CLI flags are provided:
 
 Date format uses German notation: `DD.MM.YYYY` (converted from ISO internally).
 
+### Lookback window
+
+ESAMOSplus publishes with long delays, so the provider sets
+`LOOKBACK_DAYS = 90` (the 7-day default never found a decision).
+
 ## Known Quirks
 
 - **Playwright required**: The ASP.NET WebForms application relies on

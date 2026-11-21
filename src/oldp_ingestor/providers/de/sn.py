@@ -66,6 +66,10 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
         request_delay: Delay in seconds between page loads.
     """
 
+    # ESAMOSplus publishes with long delays (2026-11-21: newest decision in a
+    # 90-day window was dated 2026-09-28; the 7-day window never found any).
+    LOOKBACK_DAYS = 90
+
     SOURCE = {
         "name": "ESAMOSplus Sachsen",
         "homepage": "https://www.justiz.sachsen.de/esamosplus/",
@@ -298,7 +302,7 @@ class SnCaseProvider(PlaywrightBaseClient, CaseProvider):
                 page.wait_for_load_state("networkidle", timeout=30000)
 
         except Exception as exc:
-            logger.error("ESAMOSplus scraping failed: %s", exc)
+            self.record_source_error("ESAMOSplus scraping failed: %s", exc)
         finally:
             page.close()
             self.close()

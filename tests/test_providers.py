@@ -730,11 +730,11 @@ def test_ris_case_provider_get_cases(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             return courts_response
-        if path == "/v1/case-law/DOC-001":
+        if path == "/v1/rechtsprechung/DOC-001":
             return detail_response
         return {}
 
@@ -775,7 +775,7 @@ def test_ris_case_provider_pagination(monkeypatch):
                 }
             }
         ],
-        "view": {"next": "/v1/case-law?pageIndex=1"},
+        "view": {"next": "/v1/rechtsprechung?pageIndex=1"},
         "totalItems": 2,
     }
     page1 = {
@@ -793,10 +793,10 @@ def test_ris_case_provider_pagination(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             idx = params.get("pageIndex", 0)
             return page0 if idx == 0 else page1
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             return [{"id": "BGH", "label": "Bundesgerichtshof"}]
         # Detail endpoint
         return {}
@@ -832,9 +832,9 @@ def test_ris_case_provider_empty_file_numbers(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             return [{"id": "BGH", "label": "Bundesgerichtshof"}]
         return {}
 
@@ -868,7 +868,7 @@ def test_ris_case_provider_skips_short_content(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
         return {}
 
@@ -903,7 +903,7 @@ def test_ris_case_provider_skips_failed_html_fetch(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
         return {}
 
@@ -938,11 +938,11 @@ def test_ris_case_provider_continues_without_abstract_on_detail_failure(monkeypa
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             return [{"id": "BGH", "label": "Bundesgerichtshof"}]
-        if path == "/v1/case-law/DOC-001":
+        if path == "/v1/rechtsprechung/DOC-001":
             raise req.ConnectionError("Failed")
         return {}
 
@@ -978,9 +978,9 @@ def test_ris_case_provider_limit(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             return [{"id": "BGH", "label": "Bundesgerichtshof"}]
         return {}
 
@@ -1340,11 +1340,11 @@ def test_ris_provider_pagination(monkeypatch):
 
 
 def test_ris_case_provider_passes_filter_params(monkeypatch):
-    """court filter is passed as courtType; date params are NOT sent (API ignores them)."""
+    """court and date filters use the /v1/rechtsprechung parameter names."""
     captured = {}
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             captured.update(params)
             return {"member": [], "view": {}}
         return {}
@@ -1357,10 +1357,12 @@ def test_ris_case_provider_passes_filter_params(monkeypatch):
     cases = provider.get_cases()
 
     assert cases == []
-    assert captured["courtType"] == "BGH"
-    # Date params are NOT forwarded — the RIS API ignores them server-side
-    assert "decisionDateFrom" not in captured
-    assert "decisionDateTo" not in captured
+    assert captured["court"] == "BGH"
+    assert captured["dateFrom"] == "2026-01-01"
+    assert captured["dateTo"] == "2026-06-30"
+    # Legacy /v1/case-law parameter names must not be sent anymore
+    for legacy in ("courtType", "decisionDateFrom", "decisionDateTo"):
+        assert legacy not in captured
 
 
 def test_ris_case_provider_client_side_date_filter(monkeypatch):
@@ -1368,7 +1370,7 @@ def test_ris_case_provider_client_side_date_filter(monkeypatch):
     html_fetched = []
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return {
                 "member": [
                     {
@@ -1398,7 +1400,7 @@ def test_ris_case_provider_client_side_date_filter(monkeypatch):
                 ],
                 "view": {},
             }
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             return [{"id": "BGH", "label": "Bundesgerichtshof"}]
         return {}
 
@@ -1428,7 +1430,7 @@ def test_ris_case_provider_stops_at_date_from(monkeypatch):
     page_calls = []
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             page_calls.append(params.get("pageIndex", 0))
             if params.get("pageIndex", 0) == 0:
                 return {
@@ -1451,11 +1453,11 @@ def test_ris_case_provider_stops_at_date_from(monkeypatch):
                             }
                         },
                     ],
-                    "view": {"next": "/v1/case-law?pageIndex=1&size=300"},
+                    "view": {"next": "/v1/rechtsprechung?pageIndex=1&size=300"},
                 }
             # Page 1 should never be requested
             return {"member": [], "view": {}}
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             return [{"id": "BGH", "label": "Bundesgerichtshof"}]
         return {}
 
@@ -1492,7 +1494,7 @@ def test_ris_case_provider_skips_missing_document_number(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
         return {}
 
@@ -1512,7 +1514,7 @@ def test_ris_case_provider_court_labels_failure_fallback(monkeypatch):
             {
                 "item": {
                     "documentNumber": "DOC-001",
-                    "courtName": "BGH",
+                    "courtName": "EuGH",
                     "fileNumbers": ["1/21"],
                     "decisionDate": "2026-01-15",
                 }
@@ -1522,9 +1524,9 @@ def test_ris_case_provider_court_labels_failure_fallback(monkeypatch):
     }
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             return list_response
-        if path == "/v1/case-law/courts":
+        if path == "/v1/rechtsprechung/courts":
             raise req.ConnectionError("fail")
         return {}
 
@@ -1538,7 +1540,7 @@ def test_ris_case_provider_court_labels_failure_fallback(monkeypatch):
     cases = provider.get_cases()
 
     assert len(cases) == 1
-    assert cases[0]["court_name"] == "BGH"  # falls back to code
+    assert cases[0]["court_name"] == "EuGH"  # falls back to code
 
 
 def test_ris_case_provider_422_stops_pagination(monkeypatch):
@@ -1548,7 +1550,7 @@ def test_ris_case_provider_422_stops_pagination(monkeypatch):
     page_calls = []
 
     def mock_get_json(self, path, **params):
-        if path == "/v1/case-law":
+        if path == "/v1/rechtsprechung":
             page_calls.append(params.get("pageIndex", 0))
             if params.get("pageIndex", 0) == 0:
                 return {
@@ -1563,7 +1565,7 @@ def test_ris_case_provider_422_stops_pagination(monkeypatch):
                         },
                     ],
                     "totalItems": 10000,
-                    "view": {"next": "/v1/case-law?pageIndex=1&size=300"},
+                    "view": {"next": "/v1/rechtsprechung?pageIndex=1&size=300"},
                 }
             # Simulate 422 on page 1 (boundary exceeded)
             resp = req.Response()

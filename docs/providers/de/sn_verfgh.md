@@ -77,6 +77,13 @@ Date filtering is server-side via AJAX search date parameters. The POST to
 
 The server returns only decisions within the requested date range.
 
+### Lookback window
+
+The VerfGH publishes decisions weeks to months after the decision date. The
+provider sets `LOOKBACK_DAYS = 90`; with the default 7-day window the daily
+run found 0 decisions from July to November 2026 although 23 decisions from
+that period were online.
+
 ## Known Quirks
 
 - **No pagination**: All results are returned in a single AJAX response.

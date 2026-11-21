@@ -90,6 +90,13 @@ Without this, "Found 0 case(s)" was indistinguishable from a parser bug
 (prod 2026-05-28..06-04 saw 90+ doc fetches every day with all results
 silently dropped).
 
+### Search failures
+
+A failed search (e.g. the `searchlist.phtml` HTTP 500 seen daily since
+2026-10-23 — an upstream outage that also reproduces from other networks) is
+recorded via `record_source_error()`, so the run is reported as `partial`
+and triggers the anomaly alert instead of a silent `ok` with 0 cases.
+
 ## Known Quirks
 
 - **Single-page results**: The search returns all matching results on a single

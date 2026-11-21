@@ -85,6 +85,12 @@ class SnVerfghCaseProvider(ScraperBaseClient, CaseProvider):
         request_delay: Delay in seconds between requests.
     """
 
+    # The VerfGH publishes decisions weeks to months after the decision date
+    # (prod 2026-07..11: a 7-day window found 0 decisions every day while a
+    # 90-day window returned 23, the newest dated a month earlier). The whole
+    # archive is ~10 decisions/month, so a wide window costs a few requests.
+    LOOKBACK_DAYS = 90
+
     SOURCE = {
         "name": "Verfassungsgerichtshof Sachsen",
         "homepage": "https://www.justiz.sachsen.de/esaver/",
@@ -210,7 +216,7 @@ class SnVerfghCaseProvider(ScraperBaseClient, CaseProvider):
         try:
             html = self._search()
         except requests.RequestException as exc:
-            logger.error("Search failed: %s", exc)
+            self.record_source_error("Search failed: %s", exc)
             return cases
 
         entries = self._parse_results(html)

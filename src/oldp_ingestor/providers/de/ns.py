@@ -20,6 +20,11 @@ NS_BASE_URL = "https://voris.wolterskluwer-online.de"
 NS_SEARCH_PATH = "/search"
 NS_PER_PAGE = 12  # fixed by the portal
 NS_MAX_PAGE = 5000
+# The search is sorted ``date_desc``. Once this many consecutive result pages
+# contained only decisions older than ``date_from``, the remaining pages are
+# older still and the walk stops. Two pages tolerate a few same-day
+# decisions straddling a page boundary.
+NS_STALE_PAGES_STOP = 2
 
 # OLDP state id for Niedersachsen (matches the portal's jurisdiction).
 _NS_STATE_ID = 11
@@ -52,6 +57,12 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
         limit: Maximum number of cases to return.
         request_delay: Delay in seconds between requests.
     """
+
+    # VORIS publishes roughly 1-3 weeks after the decision date (2026-11-21:
+    # newest listed decision dated 2026-11-12). With the 7-day default every
+    # listed decision was already older than --date-from, so prod fetched
+    # ~2,400 documents a day and kept none (last case created 2026-11-03).
+    LOOKBACK_DAYS = 60
 
     SOURCE = {
         "name": "NI-VORIS Niedersachsen",
@@ -176,6 +187,7 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
         """Search VORIS and yield cases one at a time (streaming)."""
         page = 0  # 0-indexed pagination
         empty_pages = 0
+        stale_pages = 0
         yielded = 0
 
         while page <= NS_MAX_PAGE:
@@ -205,6 +217,13 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
 
             empty_pages = 0
             logger.info("Page %d: found %d case links", page, len(links))
+
+            # A page counts as stale only if it parsed at least one decision
+            # older than date_from and nothing at/after it (unparseable or
+            # undated pages count as recent — be conservative). Fetch
+            # failures are neutral.
+            page_has_recent = False
+            page_old = 0
 
             for doc_path in links:
                 case_url = f"{NS_BASE_URL}{doc_path}"
@@ -246,8 +265,14 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
                     self.failure_tracker.record_failure(
                         doc_path, "unparseable case page"
                     )
+                    page_has_recent = True
                     continue
-                if not self._is_within_date_range(case.get("date", "")):
+                case_date = case.get("date", "")
+                if self.date_from and case_date and case_date < self.date_from:
+                    page_old += 1
+                else:
+                    page_has_recent = True
+                if not self._is_within_date_range(case_date):
                     continue
 
                 self.failure_tracker.record_success(doc_path)
@@ -256,6 +281,20 @@ class NsCaseProvider(LookupMixin, ScraperBaseClient, CaseProvider):
 
                 if self.limit and yielded >= self.limit:
                     return
+
+            if self.date_from and page_old and not page_has_recent:
+                stale_pages += 1
+                if stale_pages >= NS_STALE_PAGES_STOP:
+                    logger.info(
+                        "Stopping at page %d: %d consecutive page(s) only "
+                        "older than date_from (%s); results are date-sorted",
+                        page,
+                        stale_pages,
+                        self.date_from,
+                    )
+                    break
+            else:
+                stale_pages = 0
 
             page += 1
 

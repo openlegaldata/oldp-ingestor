@@ -119,6 +119,13 @@ class JurisCaseProvider(LookupMixin, PlaywrightBaseClient, CaseProvider):
     # observed and clears the timeouts in dev without making the happy
     # path slower (selector resolves the moment results render).
     SPA_TIMEOUT: int = 30000
+    # Attempts for loading + submitting the extended search before giving up.
+    # Prod 2026-06..11: juris-he/hh/mv/rlp/sa/sl/th timed out on roughly
+    # every other weekly run before any results rendered, which threw away
+    # the whole week. A fresh page after a short pause usually clears it.
+    SEARCH_ATTEMPTS: int = 3
+    # Seconds to wait between search attempts (multiplied by attempt number).
+    SEARCH_RETRY_DELAY: float = 30.0
 
     def __init__(
         self,
@@ -230,50 +237,45 @@ class JurisCaseProvider(LookupMixin, PlaywrightBaseClient, CaseProvider):
 
         transient_errors = _transient_playwright_errors()
 
-        page = self._context.new_page()
+        page = None
         try:
-            try:
-                page.goto(search_url, timeout=30000)
-                page.wait_for_load_state("networkidle", timeout=30000)
-
-                # Click "Erweiterte Suche" to reveal date fields
-                ext_search = page.locator("span.extended-search__label")
-                ext_search.wait_for(timeout=30000)
-                ext_search.click()
-                page.wait_for_selector(
-                    "#DatumInputFrom, .extended-search-datefield__input",
-                    timeout=30000,
-                )
-
-                # Fill date fields
-                if self.date_from:
-                    page.locator("#DatumInputFrom").fill(
-                        self._iso_to_german_date(self.date_from)
+            for attempt in range(1, self.SEARCH_ATTEMPTS + 1):
+                page = self._context.new_page()
+                try:
+                    self._open_search_results(page, search_url)
+                    break
+                except transient_errors as exc:
+                    page.close()
+                    page = None
+                    if attempt < self.SEARCH_ATTEMPTS:
+                        delay = self.SEARCH_RETRY_DELAY * attempt
+                        logger.warning(
+                            "Juris extended search attempt %d/%d failed for "
+                            "%s: %s: %s — retrying in %.0fs",
+                            attempt,
+                            self.SEARCH_ATTEMPTS,
+                            search_url,
+                            type(exc).__name__,
+                            exc,
+                            delay,
+                        )
+                        time.sleep(delay)
+                        continue
+                    # Transient SPA / network failure before we got any
+                    # results, on every attempt. Don't crash the run (cron
+                    # retries), but count it as a source error so the run
+                    # is reported as ``partial`` rather than a clean ``ok``
+                    # with zero cases.
+                    self.record_source_error(
+                        "Juris extended search failed for %s before any "
+                        "results were rendered (%d attempts): %s: %s — "
+                        "treating as end-of-run, yielding 0 pages",
+                        search_url,
+                        self.SEARCH_ATTEMPTS,
+                        type(exc).__name__,
+                        exc,
                     )
-                if self.date_to:
-                    page.locator("#DatumInputTo").fill(
-                        self._iso_to_german_date(self.date_to)
-                    )
-
-                # Submit the search
-                submit_btn = page.locator(
-                    'button[type="submit"], input[type="submit"], '
-                    'button:has-text("Suchen"), .search-form__button'
-                ).first
-                submit_btn.click()
-                page.wait_for_selector(self.WAIT_SELECTOR, timeout=self.SPA_TIMEOUT)
-            except transient_errors as exc:
-                # Transient SPA / network failure before we got any results.
-                # Treat as end-of-run with zero pages; cron will retry.
-                logger.warning(
-                    "Juris extended search failed for %s before any "
-                    "results were rendered: %s: %s — treating as "
-                    "end-of-run, yielding 0 pages",
-                    search_url,
-                    type(exc).__name__,
-                    exc,
-                )
-                return
+                    return
 
             self._search_submitted = True
 
@@ -318,7 +320,42 @@ class JurisCaseProvider(LookupMixin, PlaywrightBaseClient, CaseProvider):
                 page_dates = self._extract_dates_from_listing(html)
                 yield ids, page_dates
         finally:
-            page.close()
+            if page is not None:
+                page.close()
+
+    def _open_search_results(self, page, search_url: str) -> None:
+        """Load the search page, fill the date range and submit it.
+
+        Returns once the results list (or the no-results marker) rendered.
+        Raises Playwright errors on timeouts; the caller retries.
+        """
+        page.goto(search_url, timeout=30000)
+        page.wait_for_load_state("networkidle", timeout=30000)
+
+        # Click "Erweiterte Suche" to reveal date fields
+        ext_search = page.locator("span.extended-search__label")
+        ext_search.wait_for(timeout=30000)
+        ext_search.click()
+        page.wait_for_selector(
+            "#DatumInputFrom, .extended-search-datefield__input",
+            timeout=30000,
+        )
+
+        # Fill date fields
+        if self.date_from:
+            page.locator("#DatumInputFrom").fill(
+                self._iso_to_german_date(self.date_from)
+            )
+        if self.date_to:
+            page.locator("#DatumInputTo").fill(self._iso_to_german_date(self.date_to))
+
+        # Submit the search
+        submit_btn = page.locator(
+            'button[type="submit"], input[type="submit"], '
+            'button:has-text("Suchen"), .search-form__button'
+        ).first
+        submit_btn.click()
+        page.wait_for_selector(self.WAIT_SELECTOR, timeout=self.SPA_TIMEOUT)
 
     @staticmethod
     def _extract_dates_from_listing(html: str) -> list[str]:

@@ -234,7 +234,7 @@ class SnOvgCaseProvider(ScraperBaseClient, CaseProvider):
         try:
             doc_ids = self._search()
         except requests.RequestException as exc:
-            logger.error("Search failed: %s", exc)
+            self.record_source_error("Search failed: %s", exc)
             return cases
 
         logger.info("Found %d document(s)", len(doc_ids))
