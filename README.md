@@ -23,6 +23,7 @@ Data sources:
 | `juris-sh` | cases | Landesrecht Schleswig-Holstein |
 | `juris-sl` | cases | Landesrecht Saarland |
 | `juris-th` | cases | Landesrecht Thüringen |
+| `juris-api-bb`, `-bw`, `-he`, `-hh`, `-mv`, `-rlp`, `-sa`, `-sh`, `-sl`, `-th` | cases | the same ten portals over their JSON API, without Playwright |
 | `dummy` | laws + cases | Django fixture JSON files (for testing) |
 
 ## Installation
