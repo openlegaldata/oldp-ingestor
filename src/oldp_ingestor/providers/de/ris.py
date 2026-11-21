@@ -10,9 +10,11 @@ The RIS API models legislation using three abstraction levels:
   Identified by an ELI (European Legislation Identifier) such as
   ``eli/bund/bgbl-1/1896/s195``.
 - **Expression** – a specific version of a work at a point in time
-  (i.e. a particular consolidated revision).  Represented by the
-  ``workExample`` field on the list response and returned in full via
-  the expression detail endpoint.
+  (i.e. a particular consolidated revision).  Since late 2026 each list
+  item *is* an expression (its ``@id`` is the expression detail URL) and
+  the work-level data, including ``legislationDate``, sits in the nested
+  ``exampleOfWork``.  The legacy shape (work-level item with a
+  ``workExample`` reference to the expression) is still understood.
 - **Manifestation** – a concrete serialisation of an expression
   (HTML, XML, ZIP).  Accessible via encoding URLs on the expression.
 
@@ -23,15 +25,19 @@ List legislation (paginated, filterable)::
     GET /v1/legislation?size=300&pageIndex=0[&searchTerm=...]
 
 Response is a ``hydra:Collection`` with ``member[]`` items.  Each
-member wraps a ``Legislation`` item (work-level metadata) plus a
-``workExample`` reference to the current expression.
+member wraps a ``Legislation`` expression item whose ``exampleOfWork``
+carries the work-level metadata (legacy: a work item plus a
+``workExample`` reference).
 
 Expression detail::
 
     GET /v1/legislation/eli/{jurisdiction}/{agent}/{year}/{naturalId}/{pointInTime}/{version}/{language}
 
 Returns the full expression including ``hasPart`` (article list) and
-``encoding`` (manifestation URLs for HTML/XML/ZIP).
+``encoding`` (manifestation URLs for HTML/XML/ZIP) at the top level
+(legacy: nested under ``workExample``).  Each part carries the section
+label in ``name`` (``"§ 1"``) and the title in ``headline`` (legacy:
+both combined in ``name``).
 
 Article HTML::
 
@@ -85,6 +91,21 @@ from oldp_ingestor.providers.de.ris_common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _article_section_title(part: dict) -> tuple[str, str]:
+    """Return ``(section, title)`` for an expression ``hasPart`` entry.
+
+    Current payloads split the label (``name="§ 1"``) from the title
+    (``headline="Anwendungsbereich"``); parts without a label (e.g. the
+    preamble) fall back to the headline as section.  Legacy payloads put
+    both into ``name``, which is parsed with :func:`_parse_article_name`.
+    """
+    name = (part.get("name") or "").strip()
+    headline = (part.get("headline") or "").strip()
+    if headline:
+        return (name, headline) if name else (headline, "")
+    return _parse_article_name(name)
 
 
 def _parse_article_name(name: str) -> tuple[str, str]:
@@ -206,21 +227,28 @@ class RISProvider(RISBaseClient, LawProvider):
             for member in members:
                 item = member["item"]
                 abbreviation = item.get("abbreviation", "")
-                legislation_date = item.get("legislationDate", "")
+                # Current shape: item is the expression, work data in
+                # ``exampleOfWork``. Legacy: item is the work, expression
+                # referenced via ``workExample``.
+                legislation_date = item.get("legislationDate") or (
+                    item.get("exampleOfWork") or {}
+                ).get("legislationDate", "")
 
                 if not abbreviation or not legislation_date:
                     logger.debug("Skipping member with missing abbreviation or date")
                     continue
 
                 # Fetch expression detail
-                work_example = item.get("workExample", {})
-                expression_id = work_example.get("@id", "")
+                if "workExample" in item:
+                    expression_id = (item["workExample"] or {}).get("@id", "")
+                else:
+                    expression_id = item.get("@id", "")
                 if not expression_id:
                     logger.debug("Skipping %s: no expression ID", abbreviation)
                     continue
 
                 detail = self._fetch_expression_detail(expression_id)
-                work_example_detail = detail.get("workExample", {})
+                work_example_detail = detail.get("workExample", detail)
 
                 # Cache for use in get_laws()
                 cache_key = (abbreviation, legislation_date)
@@ -271,8 +299,7 @@ class RISProvider(RISBaseClient, LawProvider):
         laws = []
         for order, part in enumerate(parts, start=1):
             e_id = part.get("eId", "")
-            name = part.get("name", "")
-            section, title = _parse_article_name(name)
+            section, title = _article_section_title(part)
 
             content = ""
             if html_base_url and e_id:

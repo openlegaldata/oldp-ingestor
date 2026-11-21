@@ -1,7 +1,14 @@
 """RIS case law provider.
 
 Fetches court decisions from the Rechtsinformationsportal des Bundes
-(RIS) API endpoint ``GET /v1/case-law``.
+(RIS) API endpoint ``GET /v1/rechtsprechung``.
+
+The API renamed its case-law endpoints in October 2026: the former
+``/v1/case-law`` paths now return ``410 Gone`` and point at
+``/v1/rechtsprechung``. Filter parameters were renamed at the same time
+(``courtType`` -> ``court``, ``decisionDateFrom/To`` -> ``dateFrom/To``),
+and the detail payload switched to German field names (``leitsatz``,
+``orientierungssatz``, ...).
 
 API docs: https://docs.rechtsinformationen.bund.de/
 """
@@ -22,16 +29,19 @@ from oldp_ingestor.providers.lookup import LookupCapability, LookupMixin
 
 logger = logging.getLogger(__name__)
 
+#: Base path of all case-law endpoints (list, detail, ``.html``, ``courts``).
+CASE_LAW_PATH = "/v1/rechtsprechung"
+
 
 # All federal courts indexed by the RIS API. The codes match both the
-# RIS ``courtType`` filter and the OLDP ``court_type`` column, so a
+# RIS ``court`` filter and the OLDP ``court_type`` column, so a
 # single list serves the upstream query and the OLDP-side coverage
 # declaration used by the lookup mixin.
 _RIS_COURT_TYPES = ("BGH", "BFH", "BVerwG", "BAG", "BSG", "BPatG", "BVerfG")
 
 
 # Override court labels that the RIS API returns with a redundant
-# seat-city suffix. The API's ``/v1/case-law/courts`` endpoint emits
+# seat-city suffix. The legacy ``/v1/case-law/courts`` endpoint emitted
 # entries like ``id="BGH Karlsruhe" label="Bundesgerichtshof Karlsruhe"``
 # for every German federal court — the trailing city is the court's
 # seat, not part of the institutional name. Posting the label verbatim
@@ -40,9 +50,22 @@ _RIS_COURT_TYPES = ("BGH", "BFH", "BVerwG", "BAG", "BSG", "BPatG", "BVerfG")
 # knows the canonical name without the seat suffix).
 #
 # Keys are RIS court codes (the ``courtName`` field on each case item
-# and the ``id`` field on the courts endpoint — both carry the same
-# seat suffix). Values are the canonical OLDP court names.
+# and the ``id`` field on the courts endpoint). Values are the canonical
+# OLDP court names.
+#
+# Since the October 2026 API rename the codes are bare (``BGH``) and the
+# courts endpoint labels some courts with the abbreviation only
+# (``id="BVerwG" label="BVerwG"``), which OLDP cannot resolve either —
+# so the bare codes are mapped explicitly too. The seat-suffixed keys are
+# kept for documents that still carry the old codes.
 _RIS_COURT_LABEL_OVERRIDES: dict[str, str] = {
+    "BGH": "Bundesgerichtshof",
+    "BFH": "Bundesfinanzhof",
+    "BVerwG": "Bundesverwaltungsgericht",
+    "BPatG": "Bundespatentgericht",
+    "BAG": "Bundesarbeitsgericht",
+    "BSG": "Bundessozialgericht",
+    "BVerfG": "Bundesverfassungsgericht",
     "BGH Karlsruhe": "Bundesgerichtshof",
     "BFH München": "Bundesfinanzhof",
     "BVerwG Leipzig": "Bundesverwaltungsgericht",
@@ -56,10 +79,12 @@ _RIS_COURT_LABEL_OVERRIDES: dict[str, str] = {
 class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
     """Fetches case law from the RIS API.
 
-    The RIS API does **not** honour ``decisionDateFrom`` / ``decisionDateTo``
-    query parameters — it always returns the most recent 10,000 decisions
-    regardless of any date filter.  Date filtering is therefore applied
-    client-side via :meth:`~oldp_ingestor.providers.base.CaseProvider._is_within_date_range`.
+    Date filters are sent to the API as ``dateFrom`` / ``dateTo`` (honoured
+    server-side since the ``/v1/rechtsprechung`` rename). They are also
+    re-checked client-side via
+    :meth:`~oldp_ingestor.providers.base.CaseProvider._is_within_date_range`
+    as a safety net: the legacy endpoint silently ignored its date
+    parameters and always returned the newest 10,000 decisions.
 
     Because the API returns results in **descending** date order (newest
     first), iteration stops as soon as a decision date falls before
@@ -67,8 +92,8 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
 
     Args:
         court: Optional court code filter (e.g. ``"BGH"``).
-        date_from: Optional start date filter (ISO 8601). Applied client-side.
-        date_to: Optional end date filter (ISO 8601). Applied client-side.
+        date_from: Optional start date filter (ISO 8601).
+        date_to: Optional end date filter (ISO 8601).
         limit: Maximum number of cases to return (client-side).
         request_delay: Delay in seconds between API requests.
         proxy: Optional HTTP proxy URL (e.g. ``"http://user:pass@host:port"``).
@@ -106,7 +131,7 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
         self._court_labels: dict[str, str] | None = None
 
     def _fetch_court_labels(self) -> dict[str, str]:
-        """Fetch court code-to-label mapping from ``GET /v1/case-law/courts``.
+        """Fetch court code-to-label mapping from ``GET /v1/rechtsprechung/courts``.
 
         The endpoint returns a JSON list of objects with ``id`` (court code)
         and ``label`` (full name).
@@ -115,7 +140,7 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
             Dict mapping court codes (e.g. ``"BGH"``) to full names
             (e.g. ``"Bundesgerichtshof"``).
         """
-        data = self._get_json("/v1/case-law/courts")
+        data = self._get_json(f"{CASE_LAW_PATH}/courts")
         # Response is a plain list, not a hydra collection
         courts = data if isinstance(data, list) else data.get("member", [])
         return {c["id"]: c["label"] for c in courts if "id" in c and "label" in c}
@@ -152,7 +177,7 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
             Extracted body HTML, or ``None`` on failure.
         """
         try:
-            html = self._get_text(f"/v1/case-law/{document_number}.html")
+            html = self._get_text(f"{CASE_LAW_PATH}/{document_number}.html")
             body = extract_body(html)
             if len(body) < MIN_CONTENT_LENGTH:
                 logger.debug(
@@ -173,20 +198,36 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
             Detail dict, or ``None`` on failure.
         """
         try:
-            return self._get_json(f"/v1/case-law/{document_number}")
+            return self._get_json(f"{CASE_LAW_PATH}/{document_number}")
         except requests.RequestException as exc:
             logger.debug("Failed to fetch detail for case %s: %s", document_number, exc)
             return None
 
-    @staticmethod
-    def _build_abstract(detail: dict) -> str | None:
+    #: Abstract source fields in priority order. The detail payload uses
+    #: German names since the ``/v1/rechtsprechung`` rename; the English
+    #: names of the legacy ``/v1/case-law`` payload are kept as fallbacks
+    #: at the same priority (Leitsatz = guidingPrinciple, Orientierungssatz
+    #: = headnote, sonstiger Orientierungssatz = otherHeadnote).
+    ABSTRACT_FIELDS = (
+        "leitsatz",
+        "guidingPrinciple",
+        "orientierungssatz",
+        "headnote",
+        "sonstigerOrientierungssatz",
+        "otherHeadnote",
+        "tenor",
+    )
+
+    @classmethod
+    def _build_abstract(cls, detail: dict) -> str | None:
         """Extract the best abstract text from a case detail response.
 
-        Prefers ``guidingPrinciple``, then ``headnote``, ``otherHeadnote``,
-        and finally ``tenor``.  Returns ``None`` if all are empty.
+        Prefers the Leitsatz (``leitsatz`` / ``guidingPrinciple``), then the
+        Orientierungssatz, the other Orientierungssatz, and finally the
+        ``tenor``.  Returns ``None`` if all are empty.
         Truncates to 50 000 characters.
         """
-        for field in ("guidingPrinciple", "headnote", "otherHeadnote", "tenor"):
+        for field in cls.ABSTRACT_FIELDS:
             value = detail.get(field)
             if value and isinstance(value, str) and value.strip():
                 return value.strip()[:50000]
@@ -221,7 +262,7 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
         return case
 
     def get_cases(self) -> list[dict]:
-        """Fetch case law from ``GET /v1/case-law``.
+        """Fetch case law from ``GET /v1/rechtsprechung``.
 
         Paginates through the list endpoint, fetches HTML content and
         detail for each decision, and returns mapped case dicts.
@@ -233,12 +274,14 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
         while True:
             params: dict = {"size": MAX_PAGE_SIZE, "pageIndex": page_index}
             if self.court:
-                params["courtType"] = self.court
-            # Note: decisionDateFrom / decisionDateTo are ignored by the RIS API.
-            # Date filtering is applied client-side (see loop body below).
+                params["court"] = self.court
+            if self.date_from:
+                params["dateFrom"] = self.date_from
+            if self.date_to:
+                params["dateTo"] = self.date_to
 
             try:
-                data = self._get_json("/v1/case-law", **params)
+                data = self._get_json(CASE_LAW_PATH, **params)
             except requests.HTTPError as exc:
                 if exc.response is not None and exc.response.status_code == 422:
                     # The API returns 422 when pageIndex exceeds the 10 000-item cap.
@@ -273,7 +316,7 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
                     logger.debug("Skipping case with missing documentNumber")
                     continue
 
-                # Client-side date filter (API ignores decisionDateFrom/To params).
+                # Client-side safety net for the date filter (see class docstring).
                 # Results are in descending date order, so once we pass date_from
                 # all remaining pages are also out of range.
                 decision_date = item.get("decisionDate", "")
@@ -307,7 +350,7 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
                     item = dict(item)  # avoid mutating original
                     item["courtName"] = self._resolve_court_name(court_code)
 
-                source_url = f"{self.base_url}/v1/case-law/{document_number}.html"
+                source_url = f"{self.base_url}{CASE_LAW_PATH}/{document_number}.html"
                 case = self._map_case(item, content, abstract, source_url=source_url)
                 cases.append(case)
 
@@ -358,7 +401,7 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
         fuzzy matches (verified prod 2026-06-06).
 
         ``court_hint`` is only applied when it matches a known RIS court
-        code (``courtType`` filter); arbitrary court names are ignored
+        code (``court`` filter); arbitrary court names are ignored
         rather than producing a confusing empty result.
         """
         if not (file_number or ecli):
@@ -368,9 +411,9 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
         params: dict = {"size": min(max(int(limit) * 3, 30), MAX_PAGE_SIZE)}
         params["searchTerm"] = ecli if ecli else file_number
         if court_hint and court_hint in _RIS_COURT_TYPES:
-            params["courtType"] = court_hint
+            params["court"] = court_hint
 
-        data = self._get_json("/v1/case-law", **params)
+        data = self._get_json(CASE_LAW_PATH, **params)
         members = data.get("member", [])
 
         norm_fn = self._normalise_file_number(file_number) if file_number else ""
@@ -422,16 +465,25 @@ class RISCaseProvider(LookupMixin, RISBaseClient, CaseProvider):
         if content is None:
             return None
         detail = self._fetch_case_detail(doc_id) or {}
+
         # Compose a search-item-shaped dict for _map_case from the detail
-        # payload (same field names; detail is a superset of search).
+        # payload. The ``/v1/rechtsprechung`` detail uses German field names
+        # (``aktenzeichenListe``, ``datum``, ...); the legacy English names
+        # are kept as fallbacks.
+        def _first(*keys):
+            for key in keys:
+                if detail.get(key):
+                    return detail[key]
+            return None
+
         item = {
-            "courtName": self._resolve_court_name(detail.get("courtName", "") or ""),
-            "fileNumbers": detail.get("fileNumbers", []),
-            "decisionDate": detail.get("decisionDate", ""),
-            "documentType": detail.get("documentType", ""),
-            "ecli": detail.get("ecli", ""),
-            "headline": detail.get("headline", ""),
+            "courtName": self._resolve_court_name(_first("courtName", "gericht") or ""),
+            "fileNumbers": _first("fileNumbers", "aktenzeichenListe") or [],
+            "decisionDate": _first("decisionDate", "datum") or "",
+            "documentType": _first("documentType", "dokumenttyp") or "",
+            "ecli": detail.get("ecli", "") or "",
+            "headline": _first("headline", "kurztitel") or "",
         }
         abstract = self._build_abstract(detail) if detail else None
-        source_url = f"{self.base_url}/v1/case-law/{doc_id}.html"
+        source_url = f"{self.base_url}{CASE_LAW_PATH}/{doc_id}.html"
         return self._map_case(item, content, abstract, source_url=source_url)

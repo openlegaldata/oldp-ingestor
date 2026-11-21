@@ -1,3 +1,5 @@
+import logging
+
 from oldp_ingestor.providers.failure_tracker import (
     FailureTracker,
     NullFailureTracker,
@@ -13,6 +15,28 @@ class Provider:
     # / ``record_success(...)`` unconditionally — see
     # ``providers/failure_tracker.py``.
     failure_tracker: FailureTracker | NullFailureTracker = NullFailureTracker()
+
+    #: Number of upstream failures that kept the provider from listing or
+    #: fetching documents (search endpoint down, SPA never rendered, ...).
+    #: Providers swallow these so one flaky source never crashes a run, but
+    #: the CLI adds the count to the run's ``errors`` so the result file says
+    #: ``partial`` instead of a clean ``ok`` with zero cases — otherwise a
+    #: source can stay broken for weeks without the status dashboard or the
+    #: health check noticing. Use :meth:`record_source_error` to increment.
+    source_errors: int = 0
+
+    def record_source_error(self, msg: str, *args, logger=None) -> None:
+        """Log *msg* at ERROR level and count it as a source error.
+
+        Args:
+            msg: ``%``-style log message.
+            *args: Arguments for *msg*.
+            logger: Logger to emit on; defaults to the provider module's
+                logger so the log line keeps the provider's name.
+        """
+        log = logger or logging.getLogger(type(self).__module__)
+        log.error(msg, *args)
+        self.source_errors += 1
 
 
 class LawProvider(Provider):
@@ -48,6 +72,16 @@ class CaseProvider(Provider):
     SOURCE: dict = {"name": "", "homepage": ""}
     date_from: str = ""
     date_to: str = ""
+
+    #: Days the cron wrapper (``scripts/ingest.sh``) looks back when it
+    #: computes ``--date-from`` for incremental runs. ``None`` means "use the
+    #: wrapper default" (7 days). Sources that publish decisions weeks after
+    #: the decision date need a longer window, otherwise every decision is
+    #: already older than ``--date-from`` by the time it appears upstream and
+    #: the run silently finds nothing. Exposed via ``oldp-ingestor
+    #: providers`` as ``lookback_days``; re-fetching is cheap because
+    #: existing cases come back as 409 and are counted as ``skipped``.
+    LOOKBACK_DAYS: int | None = None
 
     def _is_within_date_range(self, date_str: str) -> bool:
         """Check if *date_str* (YYYY-MM-DD) falls within the configured range.

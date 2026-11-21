@@ -184,13 +184,13 @@ def test_ris_lookup_search_applies_court_hint_only_when_known():
     members = [_ris_member("X", "E", ["VI ZR 1/00"])]
     p1 = _FakeRis({"member": members})
     p1.lookup_search(file_number="VI ZR 1/00", court_hint="BGH")
-    assert p1.search_calls[0][1].get("courtType") == "BGH"
+    assert p1.search_calls[0][1].get("court") == "BGH"
 
     p2 = _FakeRis({"member": members})
     # An arbitrary court name (not in the federal court list) is ignored
     # so the query doesn't fail closed against a fuzzy court hint.
     p2.lookup_search(file_number="VI ZR 1/00", court_hint="LG Mannheim")
-    assert "courtType" not in p2.search_calls[0][1]
+    assert "court" not in p2.search_calls[0][1]
 
 
 def test_ris_lookup_search_empty_member_list_returns_empty():

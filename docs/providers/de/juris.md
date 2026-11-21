@@ -121,6 +121,16 @@ Date filtering is server-side via Playwright extended search form. When
 
 All 10 state subclasses inherit this behavior from `JurisCaseProvider`.
 
+### Search retries and source errors
+
+Loading and submitting the extended search is retried up to
+`SEARCH_ATTEMPTS` (3) times with a fresh page, pausing
+`SEARCH_RETRY_DELAY × attempt` seconds (30s, 60s) between attempts. From
+June to November 2026 seven portals (he, hh, mv, rlp, sa, sl, th) timed out
+before any results rendered on roughly every other weekly run. If every
+attempt fails, the failure is recorded via `record_source_error()` and the run
+is reported as `partial` rather than `ok`.
+
 ## Known Quirks
 
 - **Playwright required**: The portal is a React SPA that requires JavaScript

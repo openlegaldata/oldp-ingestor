@@ -132,14 +132,17 @@ select the output target (`api` default, `json-file` for local export).
 |---|---|
 | `GET /v1/legislation?size=300&pageIndex=0` | Hydra collection of legislation (paginated) |
 | `GET /v1/legislation/eli/...` | Expression detail (articles + encoding URLs) |
-| `GET /v1/case-law?size=300&pageIndex=0` | Hydra collection of case law (paginated) |
-| `GET /v1/case-law/{documentNumber}` | Case detail (abstract fields) |
-| `GET /v1/case-law/{documentNumber}.html` | Full HTML decision text |
-| `GET /v1/case-law/courts` | **Plain JSON list** (NOT hydra) of `{id, label, count}` |
+| `GET /v1/rechtsprechung?size=300&pageIndex=0` | Hydra collection of case law (paginated) |
+| `GET /v1/rechtsprechung/{documentNumber}` | Case detail (abstract fields, German names) |
+| `GET /v1/rechtsprechung/{documentNumber}.html` | Full HTML decision text |
+| `GET /v1/rechtsprechung/courts` | **Plain JSON list** (NOT hydra) of `{id, label, count}` |
+
+The former `/v1/case-law…` paths return **410 Gone** since 2026-10 (renamed
+to `/v1/rechtsprechung…`). Full spec: `GET /openapi.json`.
 
 ### Gotcha: courts endpoint
 
-The `/v1/case-law/courts` endpoint returns a **plain JSON list**, not a hydra
+The `/v1/rechtsprechung/courts` endpoint returns a **plain JSON list**, not a hydra
 collection. Each item has `id` (court code) and `label` (full name), not
 `courtCode`/`courtLabel`. This differs from all other RIS endpoints.
 
@@ -153,7 +156,8 @@ collection. Each item has `id` (court code) and `label` (full name), not
 ### Query parameters
 
 **Legislation**: `searchTerm`, `dateFrom`, `dateTo`, `sort`
-**Case law**: `courtType`, `decisionDateFrom`, `decisionDateTo`
+**Case law**: `court`, `dateFrom`, `dateTo` (honoured server-side; formerly
+`courtType`, `decisionDateFrom`, `decisionDateTo`)
 
 ## Field mappings (RIS to OLDP)
 
@@ -163,8 +167,8 @@ collection. Each item has `id` (court code) and `label` (full name), not
 |---|---|---|
 | `abbreviation` | `code` | Law book code (e.g. BGB) |
 | `name` | `title` | Full title |
-| `legislationDate` | `revision_date` | Consolidation date |
-| Article `name` | `section`, `title` | Parsed via `_parse_article_name()` |
+| `exampleOfWork.legislationDate` | `revision_date` | Consolidation date (list item is the expression; its `@id` is the detail URL) |
+| Article `name` / `headline` | `section`, `title` | Legacy combined `name` parsed via `_parse_article_name()` |
 | Article HTML body | `content` | `<body>` extracted |
 | Article `eId` | `slug` | Slugified |
 
@@ -172,14 +176,14 @@ collection. Each item has `id` (court code) and `label` (full name), not
 
 | RIS | OLDP | Notes |
 |---|---|---|
-| `courtName` | `court_name` | Resolved to full label via `/v1/case-law/courts` |
+| `courtName` | `court_name` | `_RIS_COURT_LABEL_OVERRIDES` (bare codes → canonical names), else `/v1/rechtsprechung/courts` label |
 | `fileNumbers[0]` | `file_number` | First element of array |
 | `decisionDate` | `date` | ISO 8601 |
 | HTML body | `content` | `<body>` extracted from `.html` endpoint |
 | `documentType` | `type` | Optional |
 | `ecli` | `ecli` | Optional |
 | `headline` | `title` | Optional |
-| `guidingPrinciple` / `headnote` / `otherHeadnote` / `tenor` | `abstract` | First non-empty wins, truncated to 50000 chars |
+| `leitsatz` / `orientierungssatz` / `sonstigerOrientierungssatz` / `tenor` | `abstract` | First non-empty wins (legacy English names as fallback), truncated to 50000 chars |
 
 ## Politeness and retry
 
@@ -201,6 +205,9 @@ collection. Each item has `id` (court code) and `label` (full name), not
 - **Failed cases saved**: When `--results-dir` is set and cases fail at the API POST step, they are saved to a JSON file for later replay via `oldp-ingestor replay --input results/failed_<provider>.json`
 - **Failed HTML fetch** for individual cases: case skipped
 - **Failed detail fetch**: case ingested without abstract
+- **Source errors**: a provider that could not list/fetch its upstream at all
+  (e.g. search endpoint 500, juris SPA timeout after all retries) reports it via
+  `record_source_error()`; the run's `errors` count includes it → status `partial`
 - **Field sanitisation**: titles/sections truncated to API max lengths, `None` values removed
 
 ## Testing notes
@@ -272,8 +279,18 @@ make ingest-all                    # run all providers
 2. **Pagination stop condition**: Only use `view.next` for case law; do not check member count
 3. **`_retry_delay` is module-level**: Defined outside `RISBaseClient` class in `de/ris_common.py`
 4. **`_extract_body` alias**: `de/ris.py` has `_extract_body = extract_body` for backward compat (tests import it)
-5. **Abstract field priority**: `guidingPrinciple` > `headnote` > `otherHeadnote` > `tenor`
+5. **Abstract field priority**: `leitsatz` > `orientierungssatz` > `sonstigerOrientierungssatz` > `tenor`
 6. **Content threshold**: Cases with `<body>` content shorter than 10 chars are skipped
+7. **Swallowed upstream failures must be counted**: when a provider catches a
+   search/listing failure to keep the run alive, call
+   `self.record_source_error(...)` instead of `logger.error(...)`. The CLI adds
+   `provider.source_errors` to the run's errors so the result is `partial`
+   (exit 1, anomaly alert) rather than a silent `ok` with 0 cases.
+8. **Late publishers need `LOOKBACK_DAYS`**: `scripts/ingest.sh` derives
+   `--date-from` from a rolling window (default 7 days). Providers whose source
+   publishes weeks after the decision date set a class-level `LOOKBACK_DAYS`
+   (currently ns 60, sn 90, sn-verfgh 90), exposed via `oldp-ingestor providers`
+   as `lookback_days`. `INGEST_WINDOW_DAYS` still overrides both.
 
 ## Import rules
 

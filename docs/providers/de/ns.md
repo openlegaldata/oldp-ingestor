@@ -53,6 +53,18 @@ Date filtering is server-side via GET query parameters:
 Results are also sorted by `sort_order=date_asc`. The server returns only
 results matching the requested date range.
 
+### Lookback window and early stop
+
+VORIS publishes decisions roughly 1–3 weeks after the decision date, so the
+provider sets `LOOKBACK_DAYS = 60` (picked up by `scripts/ingest.sh`). With
+the old 7-day window every listed decision was already older than
+`--date-from`: prod fetched ~2,400 documents a day and kept none (last case
+created 2026-11-03).
+
+Because the search is sorted `date_desc`, the provider stops paginating once
+`NS_STALE_PAGES_STOP` (2) consecutive pages contained only decisions older
+than `--date-from`, instead of walking all ~200 pages.
+
 ## Usage
 
 ```bash

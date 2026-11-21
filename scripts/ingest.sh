@@ -30,12 +30,13 @@ TIMEOUT_PLAYWRIGHT="${TIMEOUT_PLAYWRIGHT:-4h}"
 INGEST_LIMIT="${INGEST_LIMIT:-1000}"
 
 # --- Provider capabilities — derived, never hardcoded ---
-# Browser kind (http/playwright) and incremental --date-from support are
-# intrinsic provider facts owned by the ingestor package. `oldp-ingestor
-# providers` introspects the provider classes and emits them as JSON; we read
-# the two we need for this (command, provider). Adding a provider therefore
-# never requires editing this wrapper. Safe fallback if the CLI is
-# unavailable: treat as http with no date window (full fetch).
+# Browser kind (http/playwright), incremental --date-from support and the
+# provider's preferred lookback window are intrinsic provider facts owned by
+# the ingestor package. `oldp-ingestor providers` introspects the provider
+# classes and emits them as JSON; we read the three we need for this
+# (command, provider). Adding a provider therefore never requires editing
+# this wrapper. Safe fallback if the CLI is unavailable: treat as http with
+# no date window (full fetch).
 CAPS_LINE="$(oldp-ingestor providers --command "$COMMAND" 2>/dev/null \
     | COMMAND="$COMMAND" PROVIDER="$PROVIDER" python3 -c '
 import json, os, sys
@@ -44,13 +45,18 @@ try:
 except Exception:
     caps = {}
 entry = caps.get(os.environ["COMMAND"], {}).get(os.environ["PROVIDER"], {})
-print(entry.get("kind", "http"), "true" if entry.get("date_from") else "false")
+lookback = entry.get("lookback_days")
+print(
+    entry.get("kind", "http"),
+    "true" if entry.get("date_from") else "false",
+    lookback if isinstance(lookback, int) and lookback > 0 else "-",
+)
 ' 2>/dev/null || true)"
-PROVIDER_KIND="${CAPS_LINE%% *}"
-PROVIDER_DATE_FROM="${CAPS_LINE##* }"
+read -r PROVIDER_KIND PROVIDER_DATE_FROM PROVIDER_LOOKBACK <<< "$CAPS_LINE" || true
 [[ "$PROVIDER_KIND" == "playwright" ]] || PROVIDER_KIND="http"
 [[ "$PROVIDER_DATE_FROM" == "true" ]] || PROVIDER_DATE_FROM="false"
-echo "Capabilities (${COMMAND}/${PROVIDER}): kind=${PROVIDER_KIND} date_from=${PROVIDER_DATE_FROM}"
+[[ "${PROVIDER_LOOKBACK:-}" =~ ^[0-9]+$ ]] || PROVIDER_LOOKBACK=""
+echo "Capabilities (${COMMAND}/${PROVIDER}): kind=${PROVIDER_KIND} date_from=${PROVIDER_DATE_FROM} lookback_days=${PROVIDER_LOOKBACK:-default}"
 
 # --- Pre-flight: check SSH proxy ---
 if [[ -n "$PROXY" ]]; then
@@ -89,11 +95,14 @@ fi
 ARGS=("${TOP_ARGS[@]}" "$COMMAND" --provider "$PROVIDER" --request-delay "$REQUEST_DELAY" --limit "$INGEST_LIMIT")
 
 # Add --date-from for supported providers.
-# Always use at least a 7-day rolling window to catch late-published cases
-# (many courts publish days or weeks after the decision date). Dedup relies
-# on the API returning 409 for existing cases, counted as "skipped".
+# Always use a rolling window to catch late-published cases (many courts
+# publish days or weeks after the decision date). Window size, in order of
+# precedence: INGEST_WINDOW_DAYS env override, the provider's own
+# LOOKBACK_DAYS (slow publishers such as ns / sn / sn-verfgh), 7 days.
+# Dedup relies on the API returning 409 for existing cases, counted as
+# "skipped".
 if [[ "$PROVIDER_DATE_FROM" == "true" ]]; then
-    WINDOW_DAYS="${INGEST_WINDOW_DAYS:-7}"
+    WINDOW_DAYS="${INGEST_WINDOW_DAYS:-${PROVIDER_LOOKBACK:-7}}"
     ROLLING_FROM=$(date -u -d "${WINDOW_DAYS} days ago" +%Y-%m-%d)
     if [[ -f "$STATE_FILE" ]]; then
         STATE_DATE="$(cat "$STATE_FILE")"

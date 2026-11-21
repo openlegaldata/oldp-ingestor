@@ -108,10 +108,14 @@ def capabilities(command: str | None = None) -> dict[str, dict[str, Any]]:
     Shape::
 
         {
-          "cases": {"ris": {"kind": "http", "date_from": true}, ...},
-          "laws":  {"ris": {"kind": "http", "date_from": true},
-                    "gii": {"kind": "http", "date_from": false}, ...}
+          "cases": {"ris": {"kind": "http", "date_from": true,
+                            "lookback_days": null}, ...},
+          "laws":  {"ris": {"kind": "http", "date_from": true, ...},
+                    "gii": {"kind": "http", "date_from": false, ...}, ...}
         }
+
+    ``lookback_days`` is the provider's ``LOOKBACK_DAYS`` (``null`` = use
+    the cron wrapper's default window).
 
     *command* (``"cases"`` / ``"laws"``) limits the output to one group.
     A provider whose class cannot be imported is reported with an
@@ -129,6 +133,7 @@ def capabilities(command: str | None = None) -> dict[str, dict[str, Any]]:
                 out[group][name] = {
                     "kind": _kind(cls),
                     "date_from": _supports_date_from(cls),
+                    "lookback_days": getattr(cls, "LOOKBACK_DAYS", None),
                 }
             except Exception as exc:  # noqa: BLE001 — surfaced in payload
                 out[group][name] = {"error": f"{type(exc).__name__}: {exc}"}

@@ -475,6 +475,16 @@ def cmd_cases(args):
                 tracker_stats["exhausted"],
             )
 
+        source_errors = getattr(provider, "source_errors", 0)
+        if source_errors:
+            logger.error(
+                "Provider '%s' reported %d source error(s) — upstream could "
+                "not be listed/fetched; marking run as partial",
+                args.provider,
+                source_errors,
+            )
+            cases_errors += source_errors
+
         if cases_errors > 0:
             status = "partial"
 
