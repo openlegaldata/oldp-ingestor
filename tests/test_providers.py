@@ -1119,6 +1119,37 @@ def test_request_with_retry_connection_error_then_success(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_request_with_retry_read_timeout_then_success(monkeypatch):
+    """ReadTimeout (not a ConnectionError) on first attempt, success on second."""
+    import requests as req
+
+    monkeypatch.setattr(
+        "oldp_ingestor.providers.http_client.time.sleep", lambda _: None
+    )
+
+    call_count = [0]
+
+    class FakeRespOK:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    def fake_request(method, url, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise req.ReadTimeout("read timed out")
+        return FakeRespOK()
+
+    client = RISBaseClient(request_delay=0)
+    client.session = type(
+        "S", (), {"request": lambda self, *a, **kw: fake_request(*a, **kw)}
+    )()
+    resp = client._request_with_retry("GET", "http://example.com")
+    assert resp.status_code == 200
+    assert call_count[0] == 2
+
+
 def test_request_with_retry_connection_error_exhausted(monkeypatch):
     """ConnectionError on all attempts raises."""
     import requests as req

@@ -282,11 +282,14 @@ class HttpBaseClient:
                 resp.raise_for_status()
                 _LIMITER.record_success(host)
                 return resp
-            except requests.ConnectionError as exc:
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                # A read timeout (requests.ReadTimeout) is not a ConnectionError;
+                # it is just as transient and is retried the same way.
                 if attempt < MAX_RETRIES:
                     delay = INITIAL_BACKOFF * (2**attempt)
                     logger.warning(
-                        "Connection error on %s, retrying in %ds (attempt %d/%d)",
+                        "%s on %s, retrying in %ds (attempt %d/%d)",
+                        type(exc).__name__,
                         url,
                         delay,
                         attempt + 1,
