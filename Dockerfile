@@ -14,7 +14,7 @@ FROM python:3.12-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       libxml2 libxslt1.1 netcat-openbsd curl procps \
+       libxml2 libxslt1.1 netcat-openbsd curl procps libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # supercronic: cron daemon that logs to stdout (ideal for Docker)
