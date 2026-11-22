@@ -1,12 +1,19 @@
 FROM python:3.12-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /usr/local/bin/uv
 
 WORKDIR /build
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src/ src/
 
-RUN uv build --wheel
+# Runtime dependencies come from uv.lock, the same versions CI tests, and not
+# from a fresh resolve at build time. A fresh resolve once pulled an untested
+# Playwright and pymupdf 2.x into a release. --locked fails the build if
+# uv.lock is out of date with pyproject.toml. To update dependencies, run
+# `uv lock --upgrade` and open a PR.
+RUN uv export --locked --no-dev --no-emit-project --format requirements-txt \
+      -o requirements.txt \
+    && uv build --wheel
 
 # ---
 
@@ -23,8 +30,11 @@ RUN curl -fsSL "https://github.com/aptible/supercronic/releases/download/v0.2.33
       -o /usr/local/bin/supercronic \
     && chmod +x /usr/local/bin/supercronic
 
-COPY --from=builder /build/dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
+COPY --from=builder /build/requirements.txt /build/dist/*.whl /tmp/
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
+    && pip install --no-cache-dir --no-deps /tmp/*.whl \
+    && pip check \
+    && rm /tmp/*.whl /tmp/requirements.txt
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN playwright install --with-deps chromium

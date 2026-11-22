@@ -291,6 +291,14 @@ make ingest-all                    # run all providers
    publishes weeks after the decision date set a class-level `LOOKBACK_DAYS`
    (currently ns 60, sn 90, sn-verfgh 90), exposed via `oldp-ingestor providers`
    as `lookback_days`. `INGEST_WINDOW_DAYS` still overrides both.
+9. **The Docker image installs from `uv.lock`**: the Dockerfile builds the
+   image from `uv export --locked` (hash-checked) and then installs the wheel
+   with `--no-deps`. The image therefore ships exactly the versions CI tests.
+   To bump a dependency, run `uv lock --upgrade` (or `-P <pkg>`) in a PR. If
+   uv.lock is out of date with pyproject.toml, the image build fails.
+   pymupdf is held on 1.x in the lock (`uv lock -P 'pymupdf<2'`): 2.x pulls in
+   onnxruntime and numpy (~300 MB) that the code never uses. ruff is held at
+   0.15.0 because newer versions flag ~175 existing lint issues.
 
 ## Import rules
 
