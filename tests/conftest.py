@@ -18,6 +18,21 @@ def _default_user_agent():
     http_client._reset_user_agent_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _no_juris_search_retry_delay(request, monkeypatch):
+    """Skip the 30s/60s pauses between juris search attempts.
+
+    Every test whose fake page fails the search would otherwise sleep through
+    ``SEARCH_RETRY_DELAY`` for real (90s per test). Tests against the real
+    portals keep the delay.
+    """
+    if "real" not in request.keywords:
+        monkeypatch.setattr(
+            "oldp_ingestor.providers.de.juris.JurisCaseProvider.SEARCH_RETRY_DELAY",
+            0,
+        )
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-real",
